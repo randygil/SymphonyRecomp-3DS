@@ -42,8 +42,14 @@ sdmc:/3ds/sotn/Castlevania - Symphony of the Night (USA) (Track 1).bin
 sdmc:/3ds/sotn/Castlevania - Symphony of the Night (USA) (Track 2).bin
 ```
 
-Se abre desde el Homebrew Launcher. Las partidas se guardan en `sdmc:/3ds/sotn/carda.sav`
-(formato de tarjeta de memoria de PSX) y el registro en `sdmc:/3ds/sotn/log.txt`.
+Se abre desde el Homebrew Launcher **en modo título** (en Luma3DS: mantener R al abrir
+un juego instalado), porque necesita casi toda la memoria de aplicación de la O3DS
+(64 MB): el ejecutable ocupa ~39 MB (33 MB de código del juego recompilado + 6 MB de
+BSS) y en ejecución se reservan otros ~15 MB (pila del juego, audio, buffers). Lanzado
+como applet (p. ej. desde el álbum) no hay memoria suficiente.
+
+Las partidas se guardan en `sdmc:/3ds/sotn/carda.sav` (formato de tarjeta de memoria de
+PSX) y el registro en `sdmc:/3ds/sotn/log.txt`.
 
 ## Controles
 
@@ -62,20 +68,44 @@ Se abre desde el Homebrew Launcher. Las partidas se guardan en `sdmc:/3ds/sotn/c
 ## Estado
 
 Probado en Azahar en modo 3DS original: intro FMV, logo, título, selección de archivo,
-entrada de nombre y prólogo jugable (Richter en el castillo de Drácula).
+entrada de nombre y prólogo jugable (Richter en el castillo de Drácula). Falta probarlo
+en hardware real.
 
-- El juego corre a velocidad completa (60 ciclos de lógica por segundo) con
-  **frameskip automático** (hasta 2 frames seguidos); en Azahar se muestran ~25-30 FPS
-  en el prólogo.
+Rendimiento medido en Azahar (O3DS, un solo núcleo):
+
+| Escena | FPS |
+|--------|-----|
+| Título y menús | 60 |
+| Prólogo jugable | 55-60 (sin frameskip: ~59) |
+| FMV (intro y prólogo) | 15-16, la tasa nativa de los videos |
+
+- **Frameskip automático** (hasta 2 frames seguidos) solo cuando rasterizar es lo caro;
+  la lógica del juego siempre corre a 60 Hz.
 - En hardware real la GPU reparte la rasterización entre los dos núcleos (franjas de
-  filas balanceadas dinámicamente). Azahar mantiene los hilos de un `.3dsx` en el core 0,
-  así que ahí el runtime lo detecta y usa un solo núcleo.
+  filas balanceadas dinámicamente) y el audio corre en el núcleo 1. Azahar mantiene los
+  hilos de un `.3dsx` en el núcleo 0, así que ahí el runtime lo detecta y usa uno solo.
 - Los parches del proyecto de PC que dependen de C# (pantalla ancha, randomizer, trucos,
   calidad de vida) no están portados. Sí lo están las cuatro correcciones de errores del
   juego de `patches/qol/FunctionFixes.cs`.
 - Sin dithering en la ruta rápida de la GPU (la salida de la 3DS es RGB565).
 
+### Notas de implementación
+
+- Los accesos a memoria del código recompilado se expanden en línea solo para la RAM;
+  scratchpad y registros de hardware van por una función. Expandir más (p. ej. vigilar
+  cada escritura) duplicaba el tamaño del binario.
+- Los overlays (escenarios, armas, familiares) se detectan al leerlos del CD y se activan
+  en la primera llamada a su rango de direcciones, verificando con una firma de sus
+  primeros 256 bytes que el overlay anterior ya no está en RAM.
+- Las optimizaciones de GPU, MDEC y SPU se verificaron bit a bit contra la versión de
+  referencia con el host de PC (`RT_VCLOCK=1` hace las corridas deterministas y
+  `RT_PCM` captura el audio).
+- Si `sdmc:/3ds/sotn/bench.txt` existe, no hay frameskip ni límite de 60 Hz: el contador
+  de FPS muestra el rendimiento bruto.
+
 ## Variables útiles del host de PC
 
 `RT_HEADLESS=1`, `RT_DUMP=n` (volcar un BMP cada n frames), `RT_FRAMES=n`,
-`RT_INPUT=frame:mascara,...` (botones PSX en hex), `RT_NO_GPU_THREAD=1`.
+`RT_INPUT=frame:mascara,...` (botones PSX en hex), `RT_NO_GPU_THREAD=1`,
+`RT_VCLOCK=1` (reloj virtual: un frame por VSync), `RT_PCM=archivo` (audio s16 estéreo),
+`RT_NO_IO_THREAD=1`.
