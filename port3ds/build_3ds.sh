@@ -26,6 +26,17 @@ echo "== building 3dsx"
 make -j"$JOBS" TMP="$TMPDIR_WIN"
 python tools/check3dsx.py build/3ds/SymphonyRecomp.3dsx
 
+# CIA (Prod memory mode, 64MB): needs makerom and bannertool in build/tools
+# (3DSGuy/Project_CTR and diasurgical/bannertool releases)
+MAKEROM=build/tools/makerom.exe
+BANNERTOOL=build/tools/bt/windows-x86_64/bannertool.exe
+if [ -x "$MAKEROM" ] && [ -x "$BANNERTOOL" ]; then
+    echo "== building cia"
+    "$BANNERTOOL" makebanner -i cia/banner.png -a cia/banner.wav -o build/3ds/banner.bnr
+    "$BANNERTOOL" makesmdh -s "SymphonyRecomp" -l "Castlevania SotN static recompilation"         -p "SymphonyRecomp 3DS port" -i assets/icon.png -o build/3ds/icon.icn
+    "$MAKEROM" -f cia -o build/3ds/SymphonyRecomp.cia -elf build/3ds/SymphonyRecomp.elf -rsf cia/app.rsf         -icon build/3ds/icon.icn -banner build/3ds/banner.bnr -exefslogo -target t
+fi
+
 if [ "$1" = "pc" ]; then
     echo "== building PC test host"
     PATH=/c/msys64/mingw64/bin:$PATH make -f Makefile.pc -j"$JOBS" TMP="$TMPDIR_WIN"
