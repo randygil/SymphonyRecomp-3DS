@@ -447,14 +447,20 @@ static inline void adsr_fast(Voice *v, EnvP *e)
 
 #define MIX_BLOCK 256
 
-/* one voice over a block of samples (no pitch modulation involved) */
+/* one voice over a block of samples (no pitch modulation involved).
+   The envelope only moves every `cycles` samples; in between, a tick just
+   counts (adsr_cyc++). Those stretches run in a tight loop with the volume
+   held, which gives the same output as ticking every sample. */
 static void mix_voice(Voice *v, int i, int frames, const s16 *noise, int *accl, int *accr)
 {
     EnvP e;
     env_params(v, &e);
     int is_noise = ((non_lo | ((u32)non_hi << 16)) >> i) & 1;
     int fixl = !(v->vol_l & 0x8000), fixr = !(v->vol_r & 0x8000);
-    for (int n = 0; n < frames; n++) {
+    int step = v->pitch;
+    if (step > 0x3FFF) step = 0x4000;
+    int n = 0;
+    while (n < frames) {
         if (v->phase == PH_OFF) break;
         adsr_fast(v, &e);
         if (fixl) v->cur_l = (s16)(v->vol_l << 1); else sweep_tick(v->vol_l, &v->cur_l, &v->cyc_l);
@@ -468,13 +474,11 @@ static void mix_voice(Voice *v, int i, int frames, const s16 *noise, int *accl, 
         if (is_noise) sample = noise[n];
         else {
             int idx = (int)(v->counter >> 12), fi = (int)((v->counter >> 4) & 0xFF);
-            const s16 *b = v->buf + idx;
-            sample = ((GAUSS[0x0FF - fi] * b[0]) >> 15) + ((GAUSS[0x1FF - fi] * b[1]) >> 15) +
-                     ((GAUSS[0x100 + fi] * b[2]) >> 15) + ((GAUSS[fi] * b[3]) >> 15);
+            const s16 *bp = v->buf + idx;
+            sample = ((GAUSS[0x0FF - fi] * bp[0]) >> 15) + ((GAUSS[0x1FF - fi] * bp[1]) >> 15) +
+                     ((GAUSS[0x100 + fi] * bp[2]) >> 15) + ((GAUSS[fi] * bp[3]) >> 15);
         }
         int amp = (sample * v->adsr_vol) >> 15;
-        int step = v->pitch;
-        if (step > 0x3FFF) step = 0x4000;
         v->counter += (u32)step;
         if ((v->counter >> 12) >= 28) {
             v->counter -= 28u << 12;
@@ -482,6 +486,45 @@ static void mix_voice(Voice *v, int i, int frames, const s16 *noise, int *accl, 
         }
         accl[n] += (amp * v->cur_l) >> 15;
         accr[n] += (amp * v->cur_r) >> 15;
+        n++;
+
+        /* quiet stretch: the next ticks only count if no phase change is due */
+        if (!fixl || !fixr || is_noise || v->phase == PH_OFF || v->phase != e.phase) continue;
+        int vol = v->adsr_vol;
+        if (v->phase == PH_ATTACK && vol >= 0x7FFF) continue;
+        if (v->phase == PH_DECAY && vol <= (((v->adsr_lo & 0xF) + 1) << 11)) continue;
+        if (v->phase == PH_RELEASE && vol == 0) continue;
+        int cycles = e.cycles;
+        if (e.exp && !e.dec && vol > 0x6000) cycles *= 4;
+        int k = cycles - 1 - v->adsr_cyc;
+        if (k <= 0) continue;
+        if (k > frames - n) k = frames - n;
+        int phase = v->phase, cl = v->cur_l, cr = v->cur_r;
+        u32 counter = v->counter;
+        v->adsr_cyc += k;   /* undone below for the samples not run */
+        int j = 0;
+        while (j < k) {
+            int idx = (int)(counter >> 12), fi = (int)((counter >> 4) & 0xFF);
+            const s16 *bp = v->buf + idx;
+            int smp = ((GAUSS[0x0FF - fi] * bp[0]) >> 15) + ((GAUSS[0x1FF - fi] * bp[1]) >> 15) +
+                      ((GAUSS[0x100 + fi] * bp[2]) >> 15) + ((GAUSS[fi] * bp[3]) >> 15);
+            int am = (smp * vol) >> 15;
+            counter += (u32)step;
+            accl[n] += (am * cl) >> 15;
+            accr[n] += (am * cr) >> 15;
+            n++;
+            j++;
+            if ((counter >> 12) >= 28) {
+                counter -= 28u << 12;
+                v->counter = counter;
+                decode_block(v, i);
+                counter = v->counter;
+                /* an end-of-sample block may stop the voice: leave the stretch */
+                if (v->phase != phase || v->adsr_vol != vol) break;
+            }
+        }
+        v->adsr_cyc -= k - j;
+        v->counter = counter;
     }
 }
 

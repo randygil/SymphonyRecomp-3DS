@@ -24,6 +24,7 @@ void host_sleep_us(u32 us);
 const char *host_data_dir(void);    /* where disc + saves live */
 void host_audio_init(void);
 void host_shutdown(void);
+int host_test_flag(const char *name);   /* 3DS: <data>/<name>.txt exists; PC: RT_<NAME> set */
 /* minimal sync for the disc I/O thread; events are auto-reset */
 void *host_mutex_new(void);
 void host_mutex_lock(void *m);

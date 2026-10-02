@@ -71,6 +71,15 @@ int host_thread_start(void (*fn)(void *), void *arg, int core)
 
 void host_yield(void) { svcSleepThread(100000); }
 
+int host_test_flag(const char *name)
+{
+    char p[128];
+    snprintf(p, sizeof p, DATA_DIR "/%s.txt", name);
+    FILE *f = fopen(p, "r");
+    if (f) fclose(f);
+    return f != NULL;
+}
+
 void *host_mutex_new(void) { LightLock *l = malloc(sizeof *l); LightLock_Init(l); return l; }
 void host_mutex_lock(void *m) { LightLock_Lock(m); }
 void host_mutex_unlock(void *m) { LightLock_Unlock(m); }

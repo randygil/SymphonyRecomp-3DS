@@ -107,9 +107,12 @@ static inline int tex_fast_ok(void)
 #define PUT(BL, d, e, mor)                                                                  \
     do {                                                                                    \
         if (!((e) & PAL_SKIP)) {                                                            \
-            u16 _o = (u16)((e) & 0x7FFF);                                                   \
-            if ((BL) && ((e) & 0x8000)) _o = PK_BLEND(BL, *(d), _o);                        \
-            *(d) = _o | (u16)((e) & 0x8000) | (mor);                                        \
+            if (!(BL)) *(d) = (u16)(e) | (mor);   /* (e & 0x7FFF) | (e & 0x8000) == e */    \
+            else {                                                                          \
+                u16 _o = (u16)((e) & 0x7FFF);                                               \
+                if ((e) & 0x8000) _o = PK_BLEND(BL, *(d), _o);                              \
+                *(d) = _o | (u16)((e) & 0x8000) | (mor);                                    \
+            }                                                                               \
         }                                                                                   \
     } while (0)
 
@@ -220,16 +223,40 @@ static void fill_span(u16 *dst, int n, u16 c, int semi, u16 mor)
 
 /* how the texels of a primitive get their colour; fills m / pal as needed.
    Returns the MOD index and the palette pointer to hand to the span code. */
-static int setup_colour(int raw, int cr, int cg, int cb, int clut, int area, ModLut *m, u32 *pal, const void **out)
+/* modulation table for a colour; many small primitives (particles, flames)
+   share one colour, so the last table is kept (one per GPU copy/thread) */
+static const ModLut *get_mod(int cr, int cg, int cb)
+{
+    static ModLut lut;
+    static u32 key = 0xFFFFFFFFu;
+    u32 k = (u32)cr | ((u32)cg << 8) | ((u32)cb << 16);
+    if (k != key) { build_mod(&lut, cr, cg, cb); key = k; }
+    return &lut;
+}
+
+static int setup_colour(int raw, int cr, int cg, int cb, int clut, int area, const ModLut **m, u32 *pal, const void **out)
 {
     const u16 *cl = tdepth < 2 ? clut_ptr(clut) : NULL;
     if (!raw && cr == 0x80 && cg == 0x80 && cb == 0x80) raw = 1;   /* (t * 128) >> 7 == t */
     *out = cl;
     if (raw) return 0;
-    build_mod(m, cr, cg, cb);
+    *m = get_mod(cr, cg, cb);
     int n = tdepth == 0 ? 16 : 256;
-    if (tdepth < 2 && area >= n) {
-        build_pal(pal, cl, n, m);
+    if (tdepth == 0 && area >= n) {
+        /* 4 bit: reuse the last shaded palette when colour and CLUT are unchanged */
+        static u32 pal16[16], key = 0xFFFFFFFFu;
+        static u16 src[16];
+        u32 k = (u32)cr | ((u32)cg << 8) | ((u32)cb << 16);
+        if (k != key || memcmp(src, cl, sizeof src)) {
+            build_pal(pal16, cl, 16, *m);
+            memcpy(src, cl, sizeof src);
+            key = k;
+        }
+        *out = pal16;
+        return 2;
+    }
+    if (tdepth == 1 && area >= n) {
+        build_pal(pal, cl, n, *m);
         *out = pal;
         return 2;
     }
@@ -248,12 +275,12 @@ static int fast_rect(int x0, int x1, int y0, int y1, int x, int y, int u0, int v
         return 1;
     }
     if (tdepth == 3 || !tex_fast_ok()) return 0;
-    ModLut m;
+    const ModLut *m = NULL;
     u32 pal[256];
     const void *p;
     int mod = setup_colour(raw, cr, cg, cb, clut, (x1 - x0) * (y1 - y0), &m, pal, &p);
     int tw = tw_uand != 0xFF || tw_uor || tw_vand != 0xFF || tw_vor;
-    s_frect[tdepth][tw][mod][bl_index(semi)](x0, x1, y0, y1, u0 - x, v0 - y, p, &m, set_mask ? 0x8000 : 0);
+    s_frect[tdepth][tw][mod][bl_index(semi)](x0, x1, y0, y1, u0 - x, v0 - y, p, m, set_mask ? 0x8000 : 0);
     return 1;
 }
 
@@ -430,7 +457,7 @@ static int fast_tri(const Vtx *a, const Vtx *b, const Vtx *c, int flags, int clu
     s32 r0 = (a->r << 16) + 0x8000, g0 = (a->g << 16) + 0x8000, b0 = (a->b << 16) + 0x8000;
 
     int bl = bl_index(semi);
-    ModLut m;
+    const ModLut *m = NULL;
     u32 pal[256];
     const void *p = NULL;
     const u16 *cl = NULL;
@@ -514,17 +541,17 @@ static int fast_tri(const Vtx *a, const Vtx *b, const Vtx *c, int flags, int clu
                     if ((cr | cg | cb) <= 255) {   /* in range: the palette math is identical */
                         u32 key = cr | (cg << 8) | (cb << 16);
                         if (key != gkey) { gkey = key; build_pal16_shaded(pal, cl, cr, cg, cb); }
-                        if (rowfn) rowfn(x0, x1, y, y + 1, (u >> 16) - x0, (v >> 16) - y, p, &m, mor);
-                        else ft(dst, n, u, v, &st, p, &m, mor);
+                        if (rowfn) rowfn(x0, x1, y, y + 1, (u >> 16) - x0, (v >> 16) - y, p, m, mor);
+                        else ft(dst, n, u, v, &st, p, m, mor);
                         continue;
                     }
                 }
                 ftg(dst, n, u, v, r, g, bb, &st, cl, mor);
             } else if (rowfn) {
                 /* affine-free span: v constant, u advancing one texel per pixel */
-                rowfn(x0, x1, y, y + 1, (u >> 16) - x0, (v >> 16) - y, p, &m, mor);
+                rowfn(x0, x1, y, y + 1, (u >> 16) - x0, (v >> 16) - y, p, m, mor);
             } else
-                ft(dst, n, u, v, &st, p, &m, mor);
+                ft(dst, n, u, v, &st, p, m, mor);
         } else if (gour) {
             s32 r = r0 + st.drdx * dx + drdy * dy, g = g0 + st.dgdx * dx + dgdy * dy, bb = b0 + st.dbdx * dx + dbdy * dy;
             s_gspan[bl](dst, n, r, g, bb, &st, mor);

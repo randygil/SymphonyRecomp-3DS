@@ -159,6 +159,13 @@ int host_thread_start(void (*fn)(void *), void *arg, int core)
 
 void host_yield(void) { SDL_Delay(0); }
 
+int host_test_flag(const char *name)
+{
+    char v[64] = "RT_";
+    for (int i = 0; name[i] && i < 56; i++) { v[3 + i] = (char)(name[i] & ~0x20); v[4 + i] = 0; }
+    return getenv(v) != NULL;
+}
+
 void *host_mutex_new(void) { return SDL_CreateMutex(); }
 void host_mutex_lock(void *m) { SDL_LockMutex(m); }
 void host_mutex_unlock(void *m) { SDL_UnlockMutex(m); }

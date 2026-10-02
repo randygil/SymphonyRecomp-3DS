@@ -436,6 +436,80 @@ static void set_texpage(u32 tp)
     tex_disable = (tp & (1u << 11)) != 0;
 }
 
+#ifdef RT_GPU_STATS
+u32 g_quad_rect[2];   /* textured quads: [0] drawn as rects, [1] total */
+#endif
+
+/* A textured quad laid out as an axis-aligned rectangle (TL, TR, BL, BR) with
+   texels mapped 1:1 is drawn by the sprite code: the two triangles would cover
+   exactly [x0,x1) x [y0,y1) with u = u0 + dx, v = v0 + dy (same fill rule and
+   rounding as fast_tri), so the result is identical and the per-triangle and
+   per-span setup is skipped. Common for particles, flames and HUD pieces. */
+static int quad_as_rect(const Vtx *v, int flags, int clut)
+{
+#ifdef RT_GPU_STATS
+    g_quad_rect[1]++;
+#endif
+    if (check_mask) return 0;
+    int raw = (flags & F_RAW) != 0;
+    if (flags & F_GOURAUD) {
+        if (raw) {}
+        else if (v[0].r == v[1].r && v[0].r == v[2].r && v[0].r == v[3].r && v[0].g == v[1].g && v[0].g == v[2].g &&
+                 v[0].g == v[3].g && v[0].b == v[1].b && v[0].b == v[2].b && v[0].b == v[3].b) {
+            if (v[0].r == 0x80 && v[0].g == 0x80 && v[0].b == 0x80) raw = 1;
+        } else return 0;
+    }
+    /* polygons dither when modulated, sprites never do (the 3DS build has no dithering) */
+    if (!RT_FAST_NO_DITHER && dither_on && !raw) return 0;
+    int x0 = v[0].x, x1 = v[1].x, y0 = v[0].y, y1 = v[2].y;
+    if (v[1].y != y0 || v[3].y != y1 || v[2].x != x0 || v[3].x != x1 || x1 <= x0 || y1 <= y0) return 0;
+    int u0 = v[0].u, vv0 = v[0].v;
+    if (v[2].u != u0 || v[1].u != v[3].u || v[1].v != vv0 || v[2].v != v[3].v) return 0;
+    if (v[1].u - u0 != x1 - x0 || v[2].v - vv0 != y1 - y0) return 0;
+    if (x1 - x0 > 1023 || y1 - y0 > 511) return 0;
+    int cx0 = x0 < dl ? dl : x0, cx1 = x1 > dr + 1 ? dr + 1 : x1;
+    int cy0 = y0 < dt ? dt : y0, cy1 = y1 > db + 1 ? db + 1 : y1;
+    if (cx0 >= cx1 || cy0 >= cy1) return 1;
+    /* drawing over its own texels (screen-feedback effects) depends on the
+       pixel order, which differs from the two-triangle order: leave those */
+    {
+        int tw = tw_uand != 0xFF || tw_uor || tw_vand != 0xFF || tw_vor;
+        int su0 = tw ? 0 : u0, su1 = tw ? 256 : v[1].u, sv0 = tw ? 0 : vv0, sv1 = tw ? 256 : v[2].v;
+        int shift = tdepth == 0 ? 2 : tdepth == 1 ? 1 : 0;
+        int tx0 = tpx + (su0 >> shift), tx1 = tpx + ((su1 + (1 << shift) - 1) >> shift);
+        int ty0 = tpy + sv0, ty1 = tpy + sv1;
+        if (tx0 < cx1 && cx0 < tx1 && ty0 < cy1 && cy0 < ty1) return 0;
+        if (tdepth < 2) {
+            int clx = (clut & 0x3F) * 16, cly = (clut >> 6) & 0x1FF, clw = tdepth == 0 ? 16 : 256;
+            if (clx < cx1 && cx0 < clx + clw && cly >= cy0 && cly < cy1) return 0;
+        }
+    }
+#ifdef RT_QUAD_CHECK
+    static u16 saved[VRAM_W * VRAM_H], tri_out[VRAM_W * VRAM_H];
+    memcpy(saved, g_vram, sizeof saved);
+    raster_tri(v[0], v[1], v[2], flags, clut);
+    raster_tri(v[1], v[2], v[3], flags, clut);
+    memcpy(tri_out, g_vram, sizeof tri_out);
+    memcpy(g_vram, saved, sizeof saved);
+#endif
+    if (!fast_rect(cx0, cx1, cy0, cy1, x0, y0, u0, vv0, clut, v[0].r, v[0].g, v[0].b, 1, (flags & F_SEMI) != 0, raw)) return 0;
+#ifdef RT_QUAD_CHECK
+    if (memcmp(tri_out, g_vram, sizeof tri_out)) {
+        static int nlog;
+        int first = -1, cnt = 0;
+        for (int i = 0; i < VRAM_W * VRAM_H; i++) if (tri_out[i] != g_vram[i]) { if (first < 0) first = i; cnt++; }
+        if (nlog++ < 20)
+            rt_log("[quad] mismatch %d px first (%d,%d) tri %04X rect %04X: rect %d,%d-%d,%d uv %d,%d flags %x depth %d tw %d semi-bl %d raw %d col %d,%d,%d clip %d,%d-%d,%d\n",
+                   cnt, first % VRAM_W, first / VRAM_W, tri_out[first], g_vram[first], x0, y0, x1, y1, u0, vv0, flags, tdepth,
+                   tw_uand != 0xFF || tw_uor || tw_vand != 0xFF || tw_vor, blend, raw, v[0].r, v[0].g, v[0].b, cx0, cy0, cx1, cy1);
+    }
+#endif
+#ifdef RT_GPU_STATS
+    g_quad_rect[0]++;
+#endif
+    return 1;
+}
+
 static void draw_polygon(void)
 {
     u32 cmd = fifo[0];
@@ -466,6 +540,7 @@ static void draw_polygon(void)
     int flags = (tex ? F_TEX : 0) | (gour ? F_GOURAUD : 0) | (semi ? F_SEMI : 0) | (raw ? F_RAW : 0);
     /* textured, unshaded, unmodulated colour 0x80 is the same as raw */
     if (tex && !gour && !raw && cr == 0x80 && cg == 0x80 && cb == 0x80) flags |= F_RAW;
+    if (quad && tex && quad_as_rect(v, flags, clut)) return;
     raster_tri(v[0], v[1], v[2], flags, clut);
     if (quad) raster_tri(v[1], v[2], v[3], flags, clut);
 }

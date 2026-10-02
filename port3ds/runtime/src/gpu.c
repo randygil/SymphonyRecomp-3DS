@@ -132,6 +132,8 @@ void gpu_init(void)
             if (host_thread_start(worker, NULL, 1)) {
                 u64 t0 = host_ticks_us();
                 while (s_worker_cpu < 0 && host_ticks_us() - t0 < 500000) host_yield();
+                /* on emulators (Azahar) the "core 1" thread shares core 0 and its
+                   spin-waits would starve the game, so it only runs on a real core 1 */
                 s_threaded = s_worker_cpu == 1;
                 rt_log("[gpu] worker cpu %d\n", s_worker_cpu);
             }
