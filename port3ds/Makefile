@@ -19,7 +19,7 @@ TOOLS     := $(DEVKITPRO)/tools/bin
 ARCH      := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft -marm
 CFLAGS    := $(ARCH) -O2 -std=gnu11 -mword-relocations -ffunction-sections -fomit-frame-pointer \
              -fno-strict-aliasing -D__3DS__ -DRT_FAST_NO_DITHER=1 -Iruntime/include -I$(DEVKITPRO)/libctru/include \
-             -Wall -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable
+             -Wall -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable $(EXTRA)
 GENFLAGS  := $(ARCH) -O2 -std=gnu11 -mword-relocations -ffunction-sections -fomit-frame-pointer \
              -fno-strict-aliasing -Iruntime/include -w
 LDFLAGS   := -specs=3dsx.specs -g $(ARCH) -Wl,--gc-sections -L$(DEVKITPRO)/libctru/lib

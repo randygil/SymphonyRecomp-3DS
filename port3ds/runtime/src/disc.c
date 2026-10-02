@@ -123,22 +123,24 @@ int disc_track_start(int track, int *lba)
 }
 
 /* read-ahead cache: sectors are fetched RA_N at a time to keep the number of
-   SD card requests low (XA music streaming touches every sector) */
+   SD card requests low (XA music streaming touches every sector).
+   The reads run on an I/O thread: when the game gets into the second half of
+   a chunk the next one is requested, so sequential streaming rarely waits for
+   the card. Without the thread everything is read synchronously. */
 #define RA_N 32
-#define RA_SETS 4
-static int ra_base[RA_SETS] = { -1, -1, -1, -1 };
-static int ra_count[RA_SETS];
+#define RA_SETS 6
+enum { RA_EMPTY, RA_LOADING, RA_READY };
+static int ra_base[RA_SETS] = { -1, -1, -1, -1, -1, -1 };
+static int ra_count[RA_SETS], ra_state[RA_SETS];
+static u32 ra_used[RA_SETS], ra_clock;
 static u8 ra_data[RA_SETS][RA_N * 2352];
-static int ra_next;
+static void *io_mutex, *io_wake, *io_done;
+static int io_thread;
+static int io_req_demand = -1, io_req_ahead = -1;
 
-static const u8 *raw_sector(int lba)
+static void load_set(int set, int lba)
 {
-    for (int i = 0; i < RA_SETS; i++)
-        if (ra_base[i] >= 0 && lba >= ra_base[i] && lba < ra_base[i] + ra_count[i])
-            return ra_data[i] + (lba - ra_base[i]) * 2352;
     Track *t = &s_tracks[s_data_track];
-    int set = ra_next;
-    ra_next = (ra_next + 1) % RA_SETS;
     int n = RA_N;
     if (lba + n > s_data_sectors) n = s_data_sectors - lba;
     long long pos = t->file_offset + (long long)lba * t->sector_size;
@@ -152,9 +154,109 @@ static const u8 *raw_sector(int lba)
             fread(ra_data[set] + i * 2352, 1, t->sector_size, s_data);
         }
     }
-    ra_base[set] = lba;
     ra_count[set] = n;
-    return ra_data[set];
+}
+
+/* caller holds io_mutex (when threaded) */
+static int find_set(int lba)
+{
+    for (int i = 0; i < RA_SETS; i++)
+        if (ra_state[i] != RA_EMPTY && lba >= ra_base[i] && lba < ra_base[i] + (ra_state[i] == RA_READY ? ra_count[i] : RA_N))
+            return i;
+    return -1;
+}
+
+/* least recently used set that is not being loaded and isn't `keep` */
+static int victim(int keep)
+{
+    int best = -1;
+    for (int i = 0; i < RA_SETS; i++) {
+        if (ra_state[i] == RA_LOADING || i == keep) continue;
+        if (ra_state[i] == RA_EMPTY) return i;
+        if (best < 0 || ra_used[i] < ra_used[best]) best = i;
+    }
+    return best;
+}
+
+static int s_cur_set = -1;
+
+static void io_main(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        host_event_wait(io_wake);
+        for (;;) {
+            host_mutex_lock(io_mutex);
+            int lba = io_req_demand >= 0 ? io_req_demand : io_req_ahead;
+            if (io_req_demand >= 0) io_req_demand = -1; else io_req_ahead = -1;
+            int set = -1;
+            if (lba >= 0 && find_set(lba) < 0) {
+                set = victim(s_cur_set);
+                if (set >= 0) {
+                    ra_state[set] = RA_LOADING;
+                    ra_base[set] = lba;
+                }
+            }
+            host_mutex_unlock(io_mutex);
+            if (lba < 0) break;
+            if (set < 0) continue;
+            load_set(set, lba);
+            host_mutex_lock(io_mutex);
+            ra_state[set] = RA_READY;
+            host_mutex_unlock(io_mutex);
+            host_event_signal(io_done);
+        }
+    }
+}
+
+static int io_inited;
+static void disc_io_init(void)
+{
+    io_inited = 1;
+    if (getenv("RT_NO_IO_THREAD")) return;
+    io_mutex = host_mutex_new();
+    io_wake = host_event_new();
+    io_done = host_event_new();
+    io_thread = io_mutex && io_wake && io_done && host_io_thread_start(io_main, NULL);
+    rt_log("[disc] I/O thread: %s\n", io_thread ? "yes" : "no");
+}
+
+/* copies sector bytes [off, off + n) of lba; the set can't be recycled meanwhile
+   because the I/O thread never evicts the set in use (s_cur_set) */
+static const u8 *raw_sector(int lba)
+{
+    if (!io_thread) {
+        int set = find_set(lba);
+        if (set < 0) {
+            set = victim(-1);
+            ra_base[set] = lba;
+            load_set(set, lba);
+            ra_state[set] = RA_READY;
+        }
+        return ra_data[set] + (lba - ra_base[set]) * 2352;
+    }
+    host_mutex_lock(io_mutex);
+    int set;
+    for (;;) {
+        set = find_set(lba);
+        if (set >= 0 && ra_state[set] == RA_READY) break;
+        if (set < 0) io_req_demand = lba;
+        host_mutex_unlock(io_mutex);
+        if (set < 0) host_event_signal(io_wake);
+        host_event_wait(io_done);
+        host_mutex_lock(io_mutex);
+    }
+    s_cur_set = set;
+    ra_used[set] = ++ra_clock;
+    /* past the middle of this chunk: make sure the next one is on its way */
+    int next = ra_base[set] + ra_count[set], ahead = 0;
+    if (lba - ra_base[set] >= RA_N / 2 && ra_count[set] == RA_N && next < s_data_sectors && find_set(next) < 0) {
+        io_req_ahead = next;
+        ahead = 1;
+    }
+    host_mutex_unlock(io_mutex);
+    if (ahead) host_event_signal(io_wake);
+    return ra_data[set] + (lba - ra_base[set]) * 2352;
 }
 
 static int disc_read_impl(int lba, int size, u8 *out);
@@ -165,6 +267,7 @@ int disc_read(int lba, int size, u8 *out)
     g_disc_reads++;
     g_disc_last_lba = (u32)lba;
     u64 t0 = host_ticks_us();
+    if (!io_inited) disc_io_init();
     int r = disc_read_impl(lba, size, out);
     g_prof[PROF_CD] += host_ticks_us() - t0;
     return r;

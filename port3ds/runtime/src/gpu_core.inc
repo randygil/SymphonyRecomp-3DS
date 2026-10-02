@@ -691,7 +691,13 @@ static void execute(void)
 {
     u32 w = fifo[0];
     u32 op = w >> 24;
-    if (op == 0x02) { if (XFER) { gpu_front_sync(); fill_rect(); } }
+#ifdef RT_GPU_PROF
+    u64 _tx = host_ticks_us();
+#define XFER_PROF() (g_prof[PROF_G_FILL] += host_ticks_us() - _tx)
+#else
+#define XFER_PROF() ((void)0)
+#endif
+    if (op == 0x02) { if (XFER) { gpu_front_sync(); fill_rect(); XFER_PROF(); } }
     else if (op >= 0x20 && op <= 0x7F) {
         /* draw the primitive once per band, clipped to it */
         int sdt = dt, sdb = db;
@@ -716,7 +722,7 @@ static void execute(void)
         dt = sdt;
         db = sdb;
     }
-    else if (op >= 0x80 && op <= 0x9F) { if (XFER) { gpu_front_sync(); copy_vram(); } }
+    else if (op >= 0x80 && op <= 0x9F) { if (XFER) { gpu_front_sync(); copy_vram(); XFER_PROF(); } }
     else if (op >= 0xA0 && op <= 0xBF) {
         if (XFER) gpu_front_sync();
         load_x = (int)(fifo[1] & 0x3FF);

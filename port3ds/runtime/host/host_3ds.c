@@ -56,6 +56,19 @@ int host_thread_start(void (*fn)(void *), void *arg, int core)
 
 void host_yield(void) { svcSleepThread(100000); }
 
+void *host_mutex_new(void) { LightLock *l = malloc(sizeof *l); LightLock_Init(l); return l; }
+void host_mutex_lock(void *m) { LightLock_Lock(m); }
+void host_mutex_unlock(void *m) { LightLock_Unlock(m); }
+void *host_event_new(void) { LightEvent *e = malloc(sizeof *e); LightEvent_Init(e, RESET_ONESHOT); return e; }
+void host_event_signal(void *e) { LightEvent_Signal(e); }
+void host_event_wait(void *e) { LightEvent_Wait(e); }
+
+int host_io_thread_start(void (*fn)(void *), void *arg)
+{
+    /* above the game thread (0x30): it only runs when an SD read completes */
+    return threadCreate(fn, arg, 32 * 1024, 0x2C, 0, true) != NULL;
+}
+
 void host_present(const struct GpuDisplay *dp)
 {
     GpuDisplay d = *dp;
@@ -123,8 +136,9 @@ void host_present(const struct GpuDisplay *dp)
             rt_log("[fps] %d game %d  gpu %llu present %llu idle %llu spuwait %llu cd %llu mdec %llu spumix %llu worker %llu sync %llu (ms/s)\n", s_fps, s_game_fps,
                    g_prof[PROF_GPU] / 5000, g_prof[PROF_PRESENT] / 5000, g_prof[PROF_IDLE] / 5000,
                    g_prof[PROF_SPU_WAIT] / 5000, g_prof[PROF_CD] / 5000, g_prof[PROF_MDEC] / 5000, g_prof[PROF_SPU_MIX] / 5000, g_prof[PROF_WORKER] / 5000, g_prof[PROF_SYNC] / 5000);
-            rt_log("      gpu detail: tri %llu rect %llu fill %llu (ms/s)\n", g_prof[PROF_G_TRI] / 5000,
-                   g_prof[PROF_G_RECT] / 5000, g_prof[PROF_G_FILL] / 5000);
+            rt_log("      gpu detail: tri %llu (setup %llu) rect %llu fill %llu (ms/s) tris/s %u spans/s %u\n", g_prof[PROF_G_TRI] / 5000,
+                   g_prof[PROF_G_SETUP] / 5000, g_prof[PROF_G_RECT] / 5000, g_prof[PROF_G_FILL] / 5000, g_tri_calls / 5, g_tri_spans / 5);
+            g_tri_calls = g_tri_spans = 0;
             memset(g_prof, 0, sizeof g_prof);
         }
     }

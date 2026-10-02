@@ -50,8 +50,8 @@ static u64 s_next_frame_us;
 int g_frameskip_max = 2;   /* 0 disables automatic frameskip */
 static int s_skipped;
 
-/* returns 1 when the next frame should not be rendered (we are behind) */
-static int throttle(void)
+/* paces the game to 60 Hz; returns how far behind schedule we are (us) */
+static u32 throttle(void)
 {
     const u64 frame_us = 16683;
     u64 now = host_ticks_us();
@@ -65,19 +65,29 @@ static int throttle(void)
         host_sleep_us((u32)(s_next_frame_us - now));
         return 0;
     }
-    return now > s_next_frame_us + 2000;
+    return (u32)(now - s_next_frame_us);
 }
 
 void rt_present_frame(void)
 {
     if (!host_running()) rt_fatal("quit");
+    static u64 s_draw_mark, s_draw_cost;
     u64 t0 = host_ticks_us();
-    if (!gpu_skipping()) gpu_present();
+    if (!gpu_skipping()) {
+        gpu_present();
+        /* what rasterizing the frame cost: skipping only helps when this is high
+           (e.g. during FMVs the time goes to MDEC, so frames are never dropped) */
+        u64 m = g_prof[PROF_GPU] + g_prof[PROF_SYNC];
+        s_draw_cost = m - s_draw_mark;
+    }
+    s_draw_mark = g_prof[PROF_GPU] + g_prof[PROF_SYNC];
     u64 t1 = host_ticks_us();
     host_poll_input();
-    int late = throttle();
-    /* frameskip: keep running the game at full speed, draw fewer frames */
-    if (late && s_skipped < g_frameskip_max) { s_skipped++; gpu_set_skip(1); }
+    u32 late = throttle();
+    /* frameskip: keep running the game at full speed, draw fewer frames.
+       A few ms of lag are tolerated so the drawn/skipped ratio settles near
+       what the frame budget allows instead of dropping two frames each time. */
+    if (late > 4000 && s_draw_cost > 2000 && s_skipped < g_frameskip_max) { s_skipped++; gpu_set_skip(1); }
     else { s_skipped = 0; gpu_set_skip(0); }
     u64 t2 = host_ticks_us();
     g_prof[PROF_PRESENT] += t1 - t0;
@@ -188,8 +198,25 @@ static void gpu_linked_list(u32 addr)
 void dma_run(int ch, u32 madr, u32 bcr, u32 chcr)
 {
     switch (ch) {
-    case 0: { u32 n = word_count(bcr); for (u32 i = 0; i < n; i++) mdec_write0(RD32(madr + i * 4u)); break; }
-    case 1: { u32 n = word_count(bcr); for (u32 i = 0; i < n; i++) WR32(madr + i * 4u, mdec_read_data()); break; }
+    case 0: {
+        u32 n = word_count(bcr), o = madr & RAM_MASK;
+        int fast = IS_RAM(madr) && !(o & 3) && o + n * 4 <= RAM_SIZE;
+        for (u32 i = 0; i < n;) {
+            int k = fast ? mdec_write_block((const u32 *)(g_ram + o + i * 4u), (int)(n - i)) : 0;
+            if (k) { i += (u32)k; continue; }
+            mdec_write0(RD32(madr + i * 4u));
+            i++;
+        }
+        break;
+    }
+    case 1: {
+        u32 n = word_count(bcr), o = madr & RAM_MASK;
+        if (IS_RAM(madr) && !(o & 3) && o + n * 4 <= RAM_SIZE &&
+            (o + n * 4 <= g_watch_lo || o >= g_watch_lo + 0x800u) &&
+            mdec_read_block((u32 *)(g_ram + o), (int)n)) break;
+        for (u32 i = 0; i < n; i++) WR32(madr + i * 4u, mdec_read_data());
+        break;
+    }
     case 2: {
         u32 sync = (chcr >> 9) & 3u;
         if (sync == 2) { u64 t = host_ticks_us(); gpu_linked_list(madr); g_prof[PROF_GPU] += host_ticks_us() - t; }

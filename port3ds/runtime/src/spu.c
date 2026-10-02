@@ -405,14 +405,123 @@ static void tick(int *outl, int *outr)
 
 static inline int clamp16(int v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
 
-void spu_mix(s16 *dst, int frames)
+/* ADSR with the per-phase parameters decoded once (identical to tick_adsr +
+   env_tick, which decode the registers on every sample) */
+typedef struct { int cycles, step, exp, dec, phase; } EnvP;
+
+static void env_params(const Voice *v, EnvP *e)
 {
-    spu_lock();
+    int lo = v->adsr_lo, hi = v->adsr_hi, shift, step_idx;
+    e->phase = v->phase;
+    switch (v->phase) {
+    case PH_ATTACK: shift = (lo >> 10) & 0x1F; step_idx = (lo >> 8) & 3; e->exp = (lo >> 15) & 1; e->dec = 0; break;
+    case PH_DECAY: shift = (lo >> 4) & 0xF; step_idx = 0; e->exp = 1; e->dec = 1; break;
+    case PH_SUSTAIN: shift = (hi >> 8) & 0x1F; step_idx = (hi >> 6) & 3; e->exp = (hi >> 15) & 1; e->dec = (hi >> 14) & 1; break;
+    default: shift = hi & 0x1F; step_idx = 0; e->exp = (hi >> 5) & 1; e->dec = 1; break;
+    }
+    e->cycles = 1 << (shift - 11 > 0 ? shift - 11 : 0);
+    e->step = (e->dec ? STEP_DOWN : STEP_UP)[step_idx] << (11 - shift > 0 ? 11 - shift : 0);
+}
+
+static inline void adsr_fast(Voice *v, EnvP *e)
+{
+    if (v->phase == PH_ATTACK && v->adsr_vol >= 0x7FFF) { v->phase = PH_DECAY; v->adsr_cyc = 0; }
+    if (v->phase == PH_DECAY && v->adsr_vol <= (((v->adsr_lo & 0xF) + 1) << 11)) { v->phase = PH_SUSTAIN; v->adsr_cyc = 0; }
+    if (v->phase != e->phase) env_params(v, e);
+    if (v->phase != PH_OFF) {
+        int mag = v->adsr_vol;   /* envelopes are never negative */
+        int cycles = e->cycles;
+        if (e->exp && !e->dec && mag > 0x6000) cycles *= 4;
+        if (++v->adsr_cyc >= cycles) {
+            v->adsr_cyc = 0;
+            int step = e->step;
+            if (e->exp && e->dec) { step = step * mag / 0x8000; if (!step) step = -1; }
+            int next = mag + step;
+            if (next < 0) next = 0;
+            if (next > 0x7FFF) next = 0x7FFF;
+            v->adsr_vol = (s16)next;
+        }
+    }
+    if (v->phase == PH_RELEASE && v->adsr_vol == 0) v->phase = PH_OFF;
+}
+
+#define MIX_BLOCK 256
+
+/* one voice over a block of samples (no pitch modulation involved) */
+static void mix_voice(Voice *v, int i, int frames, const s16 *noise, int *accl, int *accr)
+{
+    EnvP e;
+    env_params(v, &e);
+    int is_noise = ((non_lo | ((u32)non_hi << 16)) >> i) & 1;
+    int fixl = !(v->vol_l & 0x8000), fixr = !(v->vol_r & 0x8000);
+    for (int n = 0; n < frames; n++) {
+        if (v->phase == PH_OFF) break;
+        adsr_fast(v, &e);
+        if (fixl) v->cur_l = (s16)(v->vol_l << 1); else sweep_tick(v->vol_l, &v->cur_l, &v->cyc_l);
+        if (fixr) v->cur_r = (s16)(v->vol_r << 1); else sweep_tick(v->vol_r, &v->cur_r, &v->cyc_r);
+        if (!v->has_block) {
+            memset(v->buf, 0, sizeof v->buf);
+            decode_block(v, i);
+            v->has_block = 1;
+        }
+        int sample;
+        if (is_noise) sample = noise[n];
+        else {
+            int idx = (int)(v->counter >> 12), fi = (int)((v->counter >> 4) & 0xFF);
+            const s16 *b = v->buf + idx;
+            sample = ((GAUSS[0x0FF - fi] * b[0]) >> 15) + ((GAUSS[0x1FF - fi] * b[1]) >> 15) +
+                     ((GAUSS[0x100 + fi] * b[2]) >> 15) + ((GAUSS[fi] * b[3]) >> 15);
+        }
+        int amp = (sample * v->adsr_vol) >> 15;
+        int step = v->pitch;
+        if (step > 0x3FFF) step = 0x4000;
+        v->counter += (u32)step;
+        if ((v->counter >> 12) >= 28) {
+            v->counter -= 28u << 12;
+            decode_block(v, i);
+        }
+        accl[n] += (amp * v->cur_l) >> 15;
+        accr[n] += (amp * v->cur_r) >> 15;
+    }
+}
+
+static void mix_block(s16 *dst, int frames)
+{
+    int accl[MIX_BLOCK], accr[MIX_BLOCK];
+    s16 noise[MIX_BLOCK];
+    u32 pmonm = pmon_lo | ((u32)pmon_hi << 16), on = 0;
+    /* the game can't touch the registers while we hold the lock, so the keys
+       resolved at the first sample hold for the whole block */
+    resolve_keys();
+    for (int i = 0; i < 24; i++) if (v_[i].phase != PH_OFF) on |= 1u << i;
+    if (pmonm & on & ~1u) {
+        /* pitch modulation chains voices sample by sample: use the reference path */
+        for (int n = 0; n < frames; n++) {
+            sweep_tick(main_l, &main_cur_l, &main_cyc_l);
+            sweep_tick(main_r, &main_cur_r, &main_cyc_r);
+            tick(&accl[n], &accr[n]);
+            int l = accl[n], r = accr[n];
+            s16 xl, xr;
+            if (xa_next(&xl, &xr)) {
+                int al = clamp16((xl * mix_ll + xr * mix_rl) >> 7);
+                int ar = clamp16((xl * mix_lr + xr * mix_rr) >> 7);
+                l += (al * (s16)cd_l) >> 15;
+                r += (ar * (s16)cd_r) >> 15;
+            }
+            dst[n * 2] = (s16)((clamp16(l) * main_cur_l) >> 15);
+            dst[n * 2 + 1] = (s16)((clamp16(r) * main_cur_r) >> 15);
+        }
+        return;
+    }
+    for (int n = 0; n < frames; n++) { tick_noise(); noise[n] = (s16)noise_level; }
+    memset(accl, 0, frames * sizeof(int));
+    memset(accr, 0, frames * sizeof(int));
+    for (int i = 0; i < 24; i++)
+        if (on & (1u << i)) mix_voice(&v_[i], i, frames, noise, accl, accr);
     for (int n = 0; n < frames; n++) {
         sweep_tick(main_l, &main_cur_l, &main_cyc_l);
         sweep_tick(main_r, &main_cur_r, &main_cyc_r);
-        int l, r;
-        tick(&l, &r);
+        int l = clamp16(accl[n]), r = clamp16(accr[n]);
         s16 xl, xr;
         if (xa_next(&xl, &xr)) {
             int al = clamp16((xl * mix_ll + xr * mix_rl) >> 7);
@@ -420,11 +529,16 @@ void spu_mix(s16 *dst, int frames)
             l += (al * (s16)cd_l) >> 15;
             r += (ar * (s16)cd_r) >> 15;
         }
-        l = (clamp16(l) * main_cur_l) >> 15;
-        r = (clamp16(r) * main_cur_r) >> 15;
-        dst[n * 2] = (s16)l;
-        dst[n * 2 + 1] = (s16)r;
+        dst[n * 2] = (s16)((clamp16(l) * main_cur_l) >> 15);
+        dst[n * 2 + 1] = (s16)((clamp16(r) * main_cur_r) >> 15);
     }
+}
+
+void spu_mix(s16 *dst, int frames)
+{
+    spu_lock();
+    for (int n = 0; n < frames; n += MIX_BLOCK)
+        mix_block(dst + n * 2, frames - n < MIX_BLOCK ? frames - n : MIX_BLOCK);
     spu_unlock();
 }
 
@@ -434,6 +548,7 @@ static u32 xa_ring[XA_CAP];
 static int xa_w, xa_r, xa_count;
 static int xa_old_l, xa_older_l, xa_old_r, xa_older_r;
 static int xa_rate = 37800, xa_playing;
+static u32 xa_step = (u32)((37800ull << 16) / 44100);   /* xa_rate in 16.16 output samples */
 static u32 xa_pos;   /* 16.16 */
 static s16 xa_s0l, xa_s0r, xa_s1l, xa_s1r;
 static int xa_underrun;
@@ -494,6 +609,7 @@ void xa_decode_sector(const u8 *sec, int off, u8 coding)
     }
     spu_lock();
     xa_rate = rate;
+    xa_step = (u32)(((u64)rate << 16) / 44100);
     for (int i = 0; i < n; i++) {
         xa_ring[xa_w] = frames[i];
         xa_w = (xa_w + 1) & (XA_CAP - 1);
@@ -536,6 +652,6 @@ int xa_next(s16 *left, s16 *right)
     int f = (int)(xa_pos >> 4);   /* 12 bit fraction */
     *left = (s16)(xa_s0l + (((xa_s1l - xa_s0l) * f) >> 12));
     *right = (s16)(xa_s0r + (((xa_s1r - xa_s0r) * f) >> 12));
-    xa_pos += (u32)(((u64)xa_rate << 16) / 44100);
+    xa_pos += xa_step;
     return 1;
 }

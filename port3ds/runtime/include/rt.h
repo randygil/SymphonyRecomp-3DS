@@ -24,6 +24,14 @@ void host_sleep_us(u32 us);
 const char *host_data_dir(void);    /* where disc + saves live */
 void host_audio_init(void);
 void host_shutdown(void);
+/* minimal sync for the disc I/O thread; events are auto-reset */
+void *host_mutex_new(void);
+void host_mutex_lock(void *m);
+void host_mutex_unlock(void *m);
+void *host_event_new(void);
+void host_event_signal(void *e);
+void host_event_wait(void *e);
+int host_io_thread_start(void (*fn)(void *), void *arg);   /* same core as the game, higher priority */
 
 /* PSX pad state, active low like the hardware */
 extern u16 g_pad_state;
@@ -72,6 +80,8 @@ u32 mdec_read_data(void);
 u32 mdec_read_status(void);
 void mdec_write0(u32 v);
 void mdec_write_ctrl(u32 v);
+int mdec_read_block(u32 *dst, int n);
+int mdec_write_block(const u32 *src, int n);
 
 /* ---- timers ---- */
 int timers_read(u32 phys, u32 *out);
@@ -154,7 +164,8 @@ int mc_match(MemCard *mc, const char *pattern, char names[][21], int *sizes, int
 /* ---- frame ---- */
 void rt_present_frame(void);
 extern u32 g_frame_count;
-enum { PROF_GPU, PROF_PRESENT, PROF_IDLE, PROF_SPU_WAIT, PROF_CD, PROF_MDEC, PROF_SPU_MIX, PROF_WORKER, PROF_SYNC, PROF_G_TRI, PROF_G_RECT, PROF_G_FILL, PROF_N };
+enum { PROF_GPU, PROF_PRESENT, PROF_IDLE, PROF_SPU_WAIT, PROF_CD, PROF_MDEC, PROF_SPU_MIX, PROF_WORKER, PROF_SYNC, PROF_G_TRI, PROF_G_RECT, PROF_G_FILL, PROF_G_SETUP, PROF_N };
+extern u32 g_tri_calls, g_tri_spans;
 extern u64 g_prof[PROF_N];
 
 #endif

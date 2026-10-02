@@ -2,6 +2,9 @@
    RT_HEADLESS=1          no window, frames dumped to <data>/frames/NNNNN.bmp every RT_DUMP frames
    RT_FRAMES=n            quit after n frames
    RT_INPUT=f:mask,...    scripted pad (mask = PSX buttons active-high, hex) from frame f
+   RT_VCLOCK=1            clock advances exactly one frame per vsync (deterministic runs,
+                          profiling numbers become meaningless)
+   RT_PCM=path            headless: mix 735 stereo samples per frame into a raw s16 file
 */
 #include "rt.h"
 #include <SDL2/SDL.h>
@@ -15,6 +18,7 @@ static SDL_Window *s_win;
 static SDL_Renderer *s_ren;
 static SDL_Texture *s_tex;
 static SDL_mutex *s_spu_mutex;
+static int s_vclock;
 static int s_headless, s_dump_every, s_max_frames, s_running = 1;
 static u32 s_frame;
 static u32 s_pixels[640 * 480];
@@ -29,6 +33,7 @@ u64 host_ticks_us(void)
 {
     static LARGE_INTEGER f;
     LARGE_INTEGER c;
+    if (s_vclock) return (u64)s_frame * 16683u;
     if (!f.QuadPart) QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&c);
     return (u64)(c.QuadPart * 1000000 / f.QuadPart);
@@ -153,9 +158,38 @@ int host_thread_start(void (*fn)(void *), void *arg, int core)
 
 void host_yield(void) { SDL_Delay(0); }
 
+void *host_mutex_new(void) { return SDL_CreateMutex(); }
+void host_mutex_lock(void *m) { SDL_LockMutex(m); }
+void host_mutex_unlock(void *m) { SDL_UnlockMutex(m); }
+void *host_event_new(void) { return SDL_CreateSemaphore(0); }
+void host_event_signal(void *e) { SDL_SemPost(e); }
+void host_event_wait(void *e) { SDL_SemWait(e); }
+
+static int io_tramp(void *p)
+{
+    void **a = p;
+    ((void (*)(void *))a[0])(a[1]);
+    return 0;
+}
+
+int host_io_thread_start(void (*fn)(void *), void *arg)
+{
+    static void *args[2];
+    args[0] = (void *)fn;
+    args[1] = arg;
+    return SDL_CreateThread(io_tramp, "io", args) != NULL;
+}
+
+static FILE *s_pcm;
+
 void host_present(const struct GpuDisplay *dp)
 {
     s_frame++;
+    if (s_pcm) {
+        static s16 buf[735 * 2];
+        spu_mix(buf, 735);
+        fwrite(buf, sizeof buf, 1, s_pcm);
+    }
 #ifdef RT_GPU_STATS
     if (s_frame % 300 == 0) {
         rt_log("[gpu] frame %u: tris %u (px %u, slow %u) rects %u (px %u, slow %u)\n", s_frame,
@@ -257,6 +291,8 @@ int main(int argc, char **argv)
     const char *cue = argc > 1 ? argv[1] : "disc/Castlevania - Symphony of the Night (USA).cue";
     if (argc > 2) snprintf(s_data_dir, sizeof s_data_dir, "%s", argv[2]);
     s_headless = getenv("RT_HEADLESS") != NULL;
+    s_vclock = getenv("RT_VCLOCK") != NULL;
+    if (getenv("RT_PCM") && s_headless) s_pcm = fopen(getenv("RT_PCM"), "wb");
     if (!s_headless) _putenv("RT_NO_GPU_THREAD=1");   /* the SDL renderer must stay on this thread */
     s_dump_every = getenv("RT_DUMP") ? atoi(getenv("RT_DUMP")) : 0;
     s_max_frames = getenv("RT_FRAMES") ? atoi(getenv("RT_FRAMES")) : 0;
