@@ -485,7 +485,7 @@ void libcdstream_pump(void)
         if (st_lba < 0) {
             st_lba = st_pending_lba >= 0 ? st_pending_lba : libcd_current_lba();
             st_start_lba = st_lba;
-            st_clock_us = host_ticks_us();
+            st_clock_us = rt_stream_clock_us();
         }
         disc_read(st_lba, 2336, sec);
         if (sec[2] & 0x04) { xa_decode_sector(sec, 8, sec[3]); st_lba++; continue; }
@@ -493,7 +493,7 @@ void libcdstream_pump(void)
         int n = rd16(sec, 14);
         if (n <= 0 || n > st_slots) { st_lba++; continue; }
         if (st_primed) {
-            double delivered = (double)(host_ticks_us() - st_clock_us) / 1e6 * libcd_sectors_per_second();
+            double delivered = (double)(rt_stream_clock_us() - st_clock_us) / 1e6 * libcd_sectors_per_second();
             if ((st_lba - st_start_lba) + n > delivered) return;
         }
         if (st_write_idx + n > st_slots) st_write_idx = 0;
@@ -510,7 +510,7 @@ void libcdstream_pump(void)
         if (!st_primed && st_ready_c >= PRIME_FRAMES) {
             st_primed = 1;
             st_start_lba = st_lba;
-            st_clock_us = host_ticks_us();
+            st_clock_us = rt_stream_clock_us();
         }
     }
 }

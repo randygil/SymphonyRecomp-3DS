@@ -5,6 +5,7 @@
    RT_VCLOCK=1            clock advances exactly one frame per vsync (deterministic runs,
                           profiling numbers become meaningless)
    RT_PCM=path            headless: mix 735 stereo samples per frame into a raw s16 file
+   RT_CHEAT_ONEHIT=1      enemies die in one hit (to script past bosses in tests)
 */
 #include "rt.h"
 #include <SDL2/SDL.h>
@@ -25,7 +26,7 @@ static u32 s_pixels[640 * 480];
 static char s_data_dir[260] = ".";
 
 typedef struct { u32 frame; u16 mask; } InputEv;
-static InputEv s_script[256];
+static InputEv s_script[8192];
 static int s_script_n;
 
 const char *host_data_dir(void) { return s_data_dir; }
@@ -181,7 +182,6 @@ int host_io_thread_start(void (*fn)(void *), void *arg)
 }
 
 static FILE *s_pcm;
-
 void host_present(const struct GpuDisplay *dp)
 {
     s_frame++;
@@ -292,13 +292,14 @@ int main(int argc, char **argv)
     if (argc > 2) snprintf(s_data_dir, sizeof s_data_dir, "%s", argv[2]);
     s_headless = getenv("RT_HEADLESS") != NULL;
     s_vclock = getenv("RT_VCLOCK") != NULL;
+    g_test_onehit = getenv("RT_CHEAT_ONEHIT") != NULL;
     if (getenv("RT_PCM") && s_headless) s_pcm = fopen(getenv("RT_PCM"), "wb");
     if (!s_headless) _putenv("RT_NO_GPU_THREAD=1");   /* the SDL renderer must stay on this thread */
     s_dump_every = getenv("RT_DUMP") ? atoi(getenv("RT_DUMP")) : 0;
     s_max_frames = getenv("RT_FRAMES") ? atoi(getenv("RT_FRAMES")) : 0;
     if (getenv("RT_INPUT")) {
         char *s = strdup(getenv("RT_INPUT"));
-        for (char *t = strtok(s, ","); t && s_script_n < 256; t = strtok(NULL, ",")) {
+        for (char *t = strtok(s, ","); t && s_script_n < 8192; t = strtok(NULL, ",")) {
             unsigned f, m;
             if (sscanf(t, "%u:%x", &f, &m) == 2) { s_script[s_script_n].frame = f; s_script[s_script_n].mask = (u16)m; s_script_n++; }
         }

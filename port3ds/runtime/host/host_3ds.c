@@ -174,7 +174,7 @@ void host_present(const struct GpuDisplay *dp)
 /* ---------------- input ---------------- */
 /* optional test script: <data>/autoinput.txt with "frame:hexmask" pairs (PSX buttons, active high) */
 typedef struct { u32 frame; u16 mask; } AutoEv;
-static AutoEv s_auto[512];
+static AutoEv s_auto[8192];
 static int s_auto_n = -1;
 static u32 s_input_frame;
 
@@ -183,10 +183,13 @@ static void load_auto(void)
     s_auto_n = 0;
     FILE *b = fopen(DATA_DIR "/bench.txt", "r");
     if (b) { fclose(b); s_bench = 1; g_frameskip_max = 0; rt_log("[host] bench mode\n"); }
+    /* test aids for scripted runs (see rt.h) */
+    if ((b = fopen(DATA_DIR "/vclock.txt", "r"))) { fclose(b); g_test_vclock = 1; rt_log("[host] frame-paced streaming\n"); }
+    if ((b = fopen(DATA_DIR "/onehit.txt", "r"))) { fclose(b); g_test_onehit = 1; rt_log("[host] one-hit test cheat\n"); }
     FILE *f = fopen(DATA_DIR "/autoinput.txt", "r");
     if (!f) return;
     unsigned fr, m;
-    while (s_auto_n < 512 && fscanf(f, " %u:%x ,", &fr, &m) == 2) { s_auto[s_auto_n].frame = fr; s_auto[s_auto_n].mask = (u16)m; s_auto_n++; }
+    while (s_auto_n < 8192 && fscanf(f, " %u:%x ,", &fr, &m) == 2) { s_auto[s_auto_n].frame = fr; s_auto[s_auto_n].mask = (u16)m; s_auto_n++; }
     fclose(f);
     rt_log("[input] autoinput: %d events\n", s_auto_n);
 }

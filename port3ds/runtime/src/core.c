@@ -48,6 +48,20 @@ void irq_deliver(int irq)
 static u64 s_next_frame_us;
 
 int g_frameskip_max = 2;   /* 0 disables automatic frameskip */
+int g_test_onehit, g_test_vclock;
+
+u64 rt_stream_clock_us(void) { return g_test_vclock ? (u64)g_frame_count * 16683u : host_ticks_us(); }
+
+/* entity table 0x800733D8, stride 0xBC, hit points at +0x3E; enemies live in
+   slots 64..255 and 0x7FFF marks invulnerable ones */
+static void test_onehit(void)
+{
+    for (u32 i = 64; i < 256; i++) {
+        u32 o = (0x000733D8u + i * 0xBCu + 0x3Eu) & RAM_MASK;
+        s16 hp = *(s16 *)(g_ram + o);
+        if (hp > 1 && hp != 0x7FFF) *(s16 *)(g_ram + o) = 1;
+    }
+}
 static int s_skipped;
 
 /* paces the game to 60 Hz; returns how far behind schedule we are (us) */
@@ -92,6 +106,7 @@ void rt_present_frame(void)
     u64 t2 = host_ticks_us();
     g_prof[PROF_PRESENT] += t1 - t0;
     g_prof[PROF_IDLE] += t2 - t1;
+    if (g_test_onehit) test_onehit();
     libcd_tick();
     libcdstream_pump();
     bios_refresh_pad();

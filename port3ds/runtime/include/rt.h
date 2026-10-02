@@ -58,6 +58,11 @@ void gpu_present(void);
 void gpu_set_skip(int skip);
 int gpu_skipping(void);
 extern int g_frameskip_max;
+/* test aids, set by the hosts: g_test_onehit leaves enemies at 1 HP each frame;
+   g_test_vclock paces CD streaming by frames instead of the wall clock, so
+   scripted input runs the same way on PC and 3DS */
+extern int g_test_onehit, g_test_vclock;
+u64 rt_stream_clock_us(void);
 
 /* ---- SPU / XA ---- */
 void spu_init(void);
