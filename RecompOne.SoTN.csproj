@@ -7,7 +7,7 @@
     <AssemblyName>sotn</AssemblyName>
     <ApplicationIcon>assets/icon/SymphonyRecomp.ico</ApplicationIcon>
     <NoWarn>0162</NoWarn>
-    <DefaultItemExcludes>$(DefaultItemExcludes);RecompOne/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);RecompOne/**;port3ds/**</DefaultItemExcludes>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

@@ -1,3 +1,5 @@
+> **Fork no oficial con un port para Nintendo 3DS (modelo original).** Ver [`port3ds/README.md`](port3ds/README.md). Este fork no está afiliado a BlackLabelHQ y no se envían cambios al repositorio original.
+
 # Castlevania: Symphony of the Night PSX Recomp
 
 The Castlevania: Symphony of the Night PlayStation Recomp, called SymphonyRecomp, is proudly brought to you by the BlackLabelHQ team!

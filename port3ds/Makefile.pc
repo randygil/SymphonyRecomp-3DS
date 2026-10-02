@@ -1,0 +1,48 @@
+# PC test build of the 3DS runtime (MSYS2 mingw64 gcc + SDL2).
+#   make -f Makefile.pc -j32
+ROOT    := $(abspath ..)
+GEN     := build/gen
+OBJ     := build/pc
+CC      := /c/msys64/mingw64/bin/gcc
+PY      := python
+TMP ?= build/tmp
+export TMP
+export TEMP := $(TMP)
+export TMPDIR := $(TMP)
+
+CFLAGS  := -O2 -g -std=gnu11 -Iruntime/include -I/c/msys64/mingw64/include -fno-strict-aliasing \
+           -Wall -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable $(EXTRA)
+LDFLAGS := -L/c/msys64/mingw64/lib -lmingw32 -lSDL2main -lSDL2 -Wl,--stack,268435456
+
+include $(GEN)/sources.mk
+
+RT_SRC  := $(wildcard runtime/src/*.c)
+RT_OBJ  := $(patsubst runtime/src/%.c,$(OBJ)/rt_%.o,$(RT_SRC))
+GEN_OBJ := $(patsubst %.c,$(OBJ)/gen_%.o,$(GEN_SOURCES))
+
+all: $(OBJ)/sotn_pc.exe
+
+$(OBJ)/fonts.c: $(ROOT)/RecompOne/RecompOne.Runtime/Bios/Fonts/font1.raw
+	@mkdir -p $(OBJ)
+	$(PY) tools/bin2c.py $@ g_font1=$(ROOT)/RecompOne/RecompOne.Runtime/Bios/Fonts/font1.raw g_font2=$(ROOT)/RecompOne/RecompOne.Runtime/Bios/Fonts/font2.raw
+
+$(OBJ)/fonts.o: $(OBJ)/fonts.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/rt_%.o: runtime/src/%.c runtime/include/rt.h runtime/include/recomp.h runtime/src/gpu_fast.inc runtime/src/gpu_core.inc
+	@mkdir -p $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/gen_%.o: $(GEN)/%.c runtime/include/recomp.h
+	@mkdir -p $(OBJ)
+	$(CC) $(CFLAGS) -O1 -g0 -c $< -o $@
+
+$(OBJ)/host_pc.o: runtime/host/host_pc.c runtime/include/rt.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/sotn_pc.exe: $(RT_OBJ) $(GEN_OBJ) $(OBJ)/fonts.o $(OBJ)/host_pc.o
+	$(CC) -o $@ $^ $(LDFLAGS)
+	cp /c/msys64/mingw64/bin/SDL2.dll $(OBJ)/
+
+clean:
+	rm -rf $(OBJ)
