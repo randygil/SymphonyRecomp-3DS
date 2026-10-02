@@ -34,7 +34,7 @@ u64 host_ticks_us(void)
 {
     static LARGE_INTEGER f;
     LARGE_INTEGER c;
-    if (s_vclock) return (u64)s_frame * 16683u;
+    if (s_vclock) return (u64)g_frame_count * 16683u;
     if (!f.QuadPart) QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&c);
     return (u64)(c.QuadPart * 1000000 / f.QuadPart);
@@ -182,9 +182,12 @@ int host_io_thread_start(void (*fn)(void *), void *arg)
 }
 
 static FILE *s_pcm;
+static u32 s_onehit_until;   /* RT_CHEAT_UNTIL=n: the one-hit cheat stops at frame n */
+
 void host_present(const struct GpuDisplay *dp)
 {
     s_frame++;
+    if (s_onehit_until && g_frame_count >= s_onehit_until) g_test_onehit = 0;
     if (s_pcm) {
         static s16 buf[735 * 2];
         spu_mix(buf, 735);
@@ -215,13 +218,13 @@ void host_present(const struct GpuDisplay *dp)
 #endif
     int w, h;
     if (s_headless) {
-        if (s_dump_every && s_frame % s_dump_every == 0) {
+        if (s_dump_every && g_frame_count % s_dump_every == 0) {
             convert_display(dp, &w, &h);
             char p[300];
-            snprintf(p, sizeof p, "%s/frames/%05u.bmp", s_data_dir, s_frame);
+            snprintf(p, sizeof p, "%s/frames/%05u.bmp", s_data_dir, g_frame_count);
             dump_bmp(p, w, h);
         }
-        if (s_max_frames && (int)s_frame >= s_max_frames) {
+        if (s_max_frames && (int)g_frame_count >= s_max_frames) {
             char p[300];
             snprintf(p, sizeof p, "%s/frames/vram.bin", s_data_dir);
             dump_vram(p);
@@ -242,7 +245,7 @@ void host_poll_input(void)
 {
     if (s_headless) {
         u16 mask = 0;
-        for (int i = 0; i < s_script_n; i++) if (s_script[i].frame <= s_frame) mask = s_script[i].mask;
+        for (int i = 0; i < s_script_n; i++) if (s_script[i].frame <= g_frame_count) mask = s_script[i].mask;
         g_pad_state = (u16)~mask;
         return;
     }
@@ -294,6 +297,9 @@ int main(int argc, char **argv)
     s_vclock = getenv("RT_VCLOCK") != NULL;
     g_test_vclock = s_vclock;
     g_test_onehit = getenv("RT_CHEAT_ONEHIT") != NULL;
+    g_test_force_skip = getenv("RT_FORCE_SKIP") ? atoi(getenv("RT_FORCE_SKIP")) : 0;
+    if (getenv("RT_PRESENT_LAG")) g_present_lag = atoi(getenv("RT_PRESENT_LAG"));
+    s_onehit_until = getenv("RT_CHEAT_UNTIL") ? (u32)atoi(getenv("RT_CHEAT_UNTIL")) : 0;
     if (getenv("RT_PCM") && s_headless) s_pcm = fopen(getenv("RT_PCM"), "wb");
     if (!s_headless) _putenv("RT_NO_GPU_THREAD=1");   /* the SDL renderer must stay on this thread */
     s_dump_every = getenv("RT_DUMP") ? atoi(getenv("RT_DUMP")) : 0;

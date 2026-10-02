@@ -48,7 +48,8 @@ void irq_deliver(int irq)
 static u64 s_next_frame_us;
 
 int g_frameskip_max = 2;   /* 0 disables automatic frameskip */
-int g_test_onehit, g_test_vclock;
+int g_test_onehit, g_test_vclock, g_test_force_skip;
+int g_present_lag = 1;
 
 /* in vclock mode the stream clock is frames plus the polls that found no data:
    the game spins on StGetNext without a VSync, so time must pass there too */
@@ -89,8 +90,17 @@ void rt_present_frame(void)
 {
     if (!host_running()) rt_fatal("quit");
     static u64 s_draw_mark, s_draw_cost;
+    /* The game double buffers: what the GPU draws during one frame is put on
+       display at the next VSync, so the image shown now was drawn during the
+       previous frame. Present only if that frame was rasterized; presenting by
+       the current frame's skip state shows the buffer that was never drawn
+       (with a 1-in-2 pattern the screen froze on an old image). */
+    static int s_skip_prev;
+    int skip_now = gpu_skipping();
+    int show = g_present_lag ? !s_skip_prev : !skip_now;
+    s_skip_prev = skip_now;
     u64 t0 = host_ticks_us();
-    if (!gpu_skipping()) {
+    if (show) {
         gpu_present();
         /* what rasterizing the frame cost: skipping only helps when this is high
            (e.g. during FMVs the time goes to MDEC, so frames are never dropped) */
@@ -104,6 +114,7 @@ void rt_present_frame(void)
     /* frameskip: keep running the game at full speed, draw fewer frames.
        A few ms of lag are tolerated so the drawn/skipped ratio settles near
        what the frame budget allows instead of dropping two frames each time. */
+    if (g_test_force_skip) late = (g_frame_count % (u32)(g_test_force_skip + 1)) ? 0xFFFFFFu : 0, s_draw_cost = 0xFFFFFF;
     if (late > 4000 && s_draw_cost > 2000 && s_skipped < g_frameskip_max) { s_skipped++; gpu_set_skip(1); }
     else { s_skipped = 0; gpu_set_skip(0); }
     u64 t2 = host_ticks_us();
