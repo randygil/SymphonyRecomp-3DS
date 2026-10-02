@@ -34,6 +34,7 @@ typedef struct OverlayDesc {
     u32 size;
     const FuncEntry *funcs;
     int count;
+    u32 sig, sig_len;   /* FNV-1a of the first sig_len bytes of the overlay file */
 } OverlayDesc;
 
 /* generated tables */
@@ -66,41 +67,51 @@ extern u8 g_scratch[0x400];
 #define IS_SCRATCH(a) (((a) & 0x7FFFFC00u) == 0x1F800000u)
 #define MEM_INLINE static inline __attribute__((always_inline))
 
+/* the inline part is kept minimal: it is expanded at every load/store of ~14k
+   recompiled functions, and code size is what limits the old 3DS (64MB) */
+/* g_ram as an opaque register: GCC may otherwise drop the mask for addresses it
+   can bound and fold "g_ram - 0x80000000" into a literal, which a 3dsx
+   relocation can't represent (top nibble set). The asm is pure, so it is CSE'd. */
+MEM_INLINE u8 *ram_base(void)
+{
+    u8 *p = g_ram;
+#ifdef __arm__
+    __asm__("" : "+r"(p));
+#endif
+    return p;
+}
+#define g_ram (ram_base())
+
 MEM_INLINE u32 RD8(u32 a) {
     if (LIKELY(IS_RAM(a))) return g_ram[a & RAM_MASK];
-    if (IS_SCRATCH(a)) return g_scratch[a & 0x3FF];
     return mem_rd8_slow(a);
 }
 MEM_INLINE u32 RD16(u32 a) {
     if (LIKELY(IS_RAM(a))) return *(const u16 *)(g_ram + (a & RAM_MASK));
-    if (IS_SCRATCH(a) && !(a & 1)) return *(const u16 *)(g_scratch + (a & 0x3FF));
     return mem_rd16_slow(a);
 }
 MEM_INLINE u32 RD32(u32 a) {
     if (LIKELY(IS_RAM(a))) return *(const u32 *)(g_ram + (a & RAM_MASK));
-    if (IS_SCRATCH(a) && !(a & 3)) return *(const u32 *)(g_scratch + (a & 0x3FF));
     return mem_rd32_slow(a);
 }
-/* overlay load detection: offset of the RAM page being watched (0x80000000 = none) */
+/* overlay loads are recognized lazily by the dispatcher (see dispatch.c);
+   g_watch_lo is only consulted by the bulk helpers */
 extern u32 g_watch_lo;
-void dispatch_watch_hit(u32 off);
-#define WATCH(o) do { if (UNLIKELY((o) - g_watch_lo < 0x800u)) dispatch_watch_hit(o); } while (0)
 
 MEM_INLINE void WR8(u32 a, u32 v) {
-    if (LIKELY(IS_RAM(a))) { u32 o = a & RAM_MASK; g_ram[o] = (u8)v; WATCH(o); }
-    else if (IS_SCRATCH(a)) g_scratch[a & 0x3FF] = (u8)v;
+    if (LIKELY(IS_RAM(a))) g_ram[a & RAM_MASK] = (u8)v;
     else mem_wr8_slow(a, v);
 }
 MEM_INLINE void WR16(u32 a, u32 v) {
-    if (LIKELY(IS_RAM(a))) { u32 o = a & RAM_MASK; *(u16 *)(g_ram + o) = (u16)v; WATCH(o); }
-    else if (IS_SCRATCH(a) && !(a & 1)) *(u16 *)(g_scratch + (a & 0x3FF)) = (u16)v;
+    if (LIKELY(IS_RAM(a))) *(u16 *)(g_ram + (a & RAM_MASK)) = (u16)v;
     else mem_wr16_slow(a, v);
 }
 MEM_INLINE void WR32(u32 a, u32 v) {
-    if (LIKELY(IS_RAM(a))) { u32 o = a & RAM_MASK; *(u32 *)(g_ram + o) = v; WATCH(o); }
-    else if (IS_SCRATCH(a) && !(a & 3)) *(u32 *)(g_scratch + (a & 0x3FF)) = v;
+    if (LIKELY(IS_RAM(a))) *(u32 *)(g_ram + (a & RAM_MASK)) = v;
     else mem_wr32_slow(a, v);
 }
+
+#undef g_ram
 
 u32 mem_lwl(u32 cur, u32 a);
 u32 mem_lwr(u32 cur, u32 a);

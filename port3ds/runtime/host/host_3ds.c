@@ -24,7 +24,10 @@ static PrintConsole s_con;
 const char *host_data_dir(void) { return DATA_DIR; }
 
 u64 host_ticks_us(void) { return svcGetSystemTick() / CPU_TICKS_PER_USEC; }
-void host_sleep_us(u32 us) { svcSleepThread((s64)us * 1000); }
+/* bench mode (<data>/bench.txt exists): no frameskip and no 60 Hz pacing, so the
+   fps counter shows raw throughput */
+static int s_bench;
+void host_sleep_us(u32 us) { if (!s_bench) svcSleepThread((s64)us * 1000); }
 int host_running(void) { return aptMainLoop(); }
 void spu_lock(void)
 {
@@ -178,6 +181,8 @@ static u32 s_input_frame;
 static void load_auto(void)
 {
     s_auto_n = 0;
+    FILE *b = fopen(DATA_DIR "/bench.txt", "r");
+    if (b) { fclose(b); s_bench = 1; g_frameskip_max = 0; rt_log("[host] bench mode\n"); }
     FILE *f = fopen(DATA_DIR "/autoinput.txt", "r");
     if (!f) return;
     unsigned fr, m;

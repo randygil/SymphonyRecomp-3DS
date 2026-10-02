@@ -217,7 +217,8 @@ static int exec_command(u8 com, u32 param, u32 result)
         libcdstream_on_stop();
         s_read_active = s_xa_active = 0;
         s_status = ST_MOTOR;
-        dispatch_clear_pending();
+        /* the overlay just read stays pending: the game copies it into place
+           after stopping the drive, and the dispatcher verifies it on first call */
         break;
     case CdlSeekL:
         if (is_audio(libcd_current_lba())) {

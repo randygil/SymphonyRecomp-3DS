@@ -55,7 +55,8 @@ foreach (var oc in config.Overlays)
 {
     var a = OverlayWriter.AnalyzeOverlay(config, oc, fs);
     if (a == null) continue;
-    results.Add(new Analysis.Overlay(oc.Name, a.Functions, a.Lba, a.Base, (uint)a.DiscBin.Length, a.Instructions));
+    results.Add(new Analysis.Overlay(oc.Name, a.Functions, a.Lba, a.Base, (uint)a.DiscBin.Length, a.Instructions)
+        { SigLen = (uint)Math.Min(256, a.DiscBin.Length & ~3), Sig = Analysis.Fnv(a.DiscBin, Math.Min(256, a.DiscBin.Length & ~3)) });
 }
 
 var allFuncs = results.SelectMany(o => o.Functions).ToList();
@@ -178,7 +179,7 @@ var sdkNames = cpatch.Values.Distinct().OrderBy(s => s).ToList();
     foreach (var ovl in results)
     {
         int n = ovl.Functions.Count(f => !f.IsStub);
-        sb.AppendLine($"    {{ \"{ovl.Name}\", {ovl.LbaStart}, 0x{ovl.Base:X8}u, 0x{ovl.Size:X}u, ovl_{ovl.Name}_funcs, {n} }},");
+        sb.AppendLine($"    {{ \"{ovl.Name}\", {ovl.LbaStart}, 0x{ovl.Base:X8}u, 0x{ovl.Size:X}u, ovl_{ovl.Name}_funcs, {n}, 0x{ovl.Sig:X8}u, {ovl.SigLen} }},");
     }
     sb.AppendLine("};");
     sb.AppendLine($"const int g_overlay_count = {results.Count};");
@@ -201,7 +202,19 @@ return 0;
 
 static class Analysis
 {
-    public sealed record Overlay(string Name, List<MipsFunction> Functions, int LbaStart, uint Base, uint Size, MipsInstruction[] Instructions);
+    public sealed record Overlay(string Name, List<MipsFunction> Functions, int LbaStart, uint Base, uint Size, MipsInstruction[] Instructions)
+    {
+        public uint Sig { get; init; }
+        public uint SigLen { get; init; }
+    }
+
+    // FNV-1a, matched by sig_hash() in dispatch.c
+    public static uint Fnv(byte[] d, int n)
+    {
+        uint h = 2166136261u;
+        for (int i = 0; i < n; i++) { h ^= d[i]; h *= 16777619u; }
+        return h;
+    }
 
     // same steps as OverlayWriter.Write for the main executable
     public static Overlay AnalyzeMain(RecompOneConfig config, PsxExe mainExe)

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using RecompOne.Recompiler.Analysis;
 using RecompOne.Recompiler.Disasm;
 
@@ -422,6 +423,7 @@ public static class CEmitter
         }
         else
             sb.AppendLine($"void {name}(Cpu *restrict c) {{");
+        int bodyStart = sb.Length;
 
         var dsIdx = new HashSet<int>();
         for (int i = 0; i < instrs.Length - 1; i++)
@@ -460,8 +462,55 @@ public static class CEmitter
                 sb.AppendLine($"{ind}dispatch_call(c, 0x{target:X8}u);");
         }
 
+        if (LocalRegs)
+        {
+            string body = sb.ToString(bodyStart, sb.Length - bodyStart);
+            sb.Length = bodyStart;
+            sb.Append(LocalizeRegs(body));
+        }
         sb.AppendLine("}");
         return sb.ToString();
+    }
+
+    // ---- register localization ----
+    // Inside a function the MIPS registers live in C locals (rN) so GCC can keep
+    // them in ARM registers; c->r[] is only synchronized where other code can
+    // observe it: before every call that receives c (the written registers are
+    // stored) and after it (every used register is reloaded), and before return.
+    // sp and gp are write-through: interrupt handlers can run from inside a memory
+    // access (DMA completion) and take the stack pointer from c->r[29].
+    // Off by default: on Azahar it measured within noise (~2%) of the plain code
+    // while making the binary ~14% bigger. CGEN_LOCALS=1 turns it on.
+    public static bool LocalRegs = Environment.GetEnvironmentVariable("CGEN_LOCALS") != null;
+
+    static readonly Regex RegRef = new(@"c->r\[(\d+)\]", RegexOptions.Compiled);
+    static readonly Regex RegAssign = new(@"c->r\[(\d+)\] = ", RegexOptions.Compiled);
+    static readonly Regex CallStmt = new(@"\b[A-Za-z_]\w*\(c(?:\)|, [^;()]*(?:\([^;()]*\)[^;()]*)*\));", RegexOptions.Compiled);
+    static readonly Regex RetStmt = new(@"\breturn;", RegexOptions.Compiled);
+
+    static string LocalizeRegs(string body)
+    {
+        var used = new SortedSet<int>();
+        var written = new SortedSet<int>();
+        foreach (Match m in RegRef.Matches(body)) used.Add(int.Parse(m.Groups[1].Value));
+        foreach (Match m in RegAssign.Matches(body)) written.Add(int.Parse(m.Groups[1].Value));
+        if (used.Count == 0) return body;
+
+        // write-through registers keep memory current at every assignment
+        string b = body.Replace("c->r[29] = ", "r29 = @WT29@ = ").Replace("c->r[28] = ", "r28 = @WT28@ = ");
+        b = RegRef.Replace(b, m => "r" + m.Groups[1].Value);
+        b = b.Replace("@WT29@", "c->r[29]").Replace("@WT28@", "c->r[28]");
+
+        string flush = string.Concat(written.Where(n => n != 28 && n != 29).Select(n => $"c->r[{n}] = r{n}; "));
+        string reload = string.Concat(used.Select(n => $" r{n} = c->r[{n}];"));
+        b = CallStmt.Replace(b, m => "{ " + flush + m.Value + reload + " }");
+        b = RetStmt.Replace(b, m => "{ " + flush + "return; }");
+
+        var head = new StringBuilder();
+        head.Append("    u32 ");
+        head.Append(string.Join(", ", used.Select(n => $"r{n} = c->r[{n}]")));
+        head.AppendLine(";");
+        return head + b + (flush.Length > 0 ? "    " + flush.TrimEnd() + "\n" : "");
     }
 
     static bool FallsThrough(MipsInstruction[] instrs)

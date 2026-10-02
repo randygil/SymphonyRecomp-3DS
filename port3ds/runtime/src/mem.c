@@ -57,6 +57,7 @@ static void unmapped(u32 a, int write)
 
 u32 mem_rd8_slow(u32 a)
 {
+    if (IS_SCRATCH(a)) return g_scratch[a & 0x3FF];
     u32 p = a & 0x1FFFFFFFu;
     if (is_cd(p)) return cdc_read(p);
     u8 *s = resolve(a, 1);
@@ -66,6 +67,7 @@ u32 mem_rd8_slow(u32 a)
 
 u32 mem_rd16_slow(u32 a)
 {
+    if (IS_SCRATCH(a) && !(a & 1)) return *(const u16 *)(g_scratch + (a & 0x3FF));
     u32 p = a & 0x1FFFFFFFu;
     if (is_cd(p)) return cdc_read(p);
     if (is_spu(p)) return spu_read16(p);
@@ -78,6 +80,7 @@ u32 mem_rd16_slow(u32 a)
 
 u32 mem_rd32_slow(u32 a)
 {
+    if (IS_SCRATCH(a) && !(a & 3)) return *(const u32 *)(g_scratch + (a & 0x3FF));
     u32 p = a & 0x1FFFFFFFu;
     switch (p) {
     case 0x1F801810u: return gpu_read_data();
@@ -97,6 +100,7 @@ u32 mem_rd32_slow(u32 a)
 
 void mem_wr8_slow(u32 a, u32 v)
 {
+    if (IS_SCRATCH(a)) { g_scratch[a & 0x3FF] = (u8)v; return; }
     u32 p = a & 0x1FFFFFFFu;
     if (is_cd(p)) { cdc_write(p, (u8)v); return; }
     u8 *s = resolve(a, 1);
@@ -106,6 +110,7 @@ void mem_wr8_slow(u32 a, u32 v)
 
 void mem_wr16_slow(u32 a, u32 v)
 {
+    if (IS_SCRATCH(a) && !(a & 1)) { *(u16 *)(g_scratch + (a & 0x3FF)) = (u16)v; return; }
     u32 p = a & 0x1FFFFFFFu;
     if (is_cd(p)) { cdc_write(p, (u8)v); return; }
     if (is_spu(p)) { spu_write16(p, (u16)v); return; }
@@ -118,6 +123,7 @@ void mem_wr16_slow(u32 a, u32 v)
 
 void mem_wr32_slow(u32 a, u32 v)
 {
+    if (IS_SCRATCH(a) && !(a & 3)) { *(u32 *)(g_scratch + (a & 0x3FF)) = v; return; }
     u32 p = a & 0x1FFFFFFFu;
     switch (p) {
     case 0x1F801810u: gpu_write_gp0(v); return;

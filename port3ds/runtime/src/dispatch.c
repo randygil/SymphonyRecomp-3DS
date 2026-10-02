@@ -12,7 +12,10 @@ static u32 s_used;
 
 static int s_active[MAX_OVERLAYS];
 static int s_active_n;
-static int s_pending = -1;
+/* overlays read from CD but not yet verified in RAM, at most one per range */
+#define MAX_PENDING 8
+static int s_pend[MAX_PENDING];
+static int s_pend_n;
 static void set_pending(int i);
 
 static inline u32 hash(u32 a) { return ((a >> 2) * 2654435761u) >> (32 - MAP_BITS); }
@@ -138,12 +141,33 @@ int dispatch_try_load(const char *name)
     return 1;
 }
 
-u32 g_watch_lo = 0x80000000u;
+u32 g_watch_lo = 0x80000000u;   /* start of the most recent pending range (bulk writes) */
 
+static int overlaps(const OverlayDesc *a, const OverlayDesc *b)
+{
+    u32 as = a->base & 0x1FFFFFFFu, bs = b->base & 0x1FFFFFFFu;
+    return as < bs + b->size && bs < as + a->size;
+}
+
+static void drop_pending(int k)
+{
+    memmove(&s_pend[k], &s_pend[k + 1], (s_pend_n - k - 1) * sizeof(int));
+    s_pend_n--;
+    g_watch_lo = s_pend_n ? (g_overlays[s_pend[s_pend_n - 1]].base & 0x1FFFFFFFu & RAM_MASK) : 0x80000000u;
+}
+
+/* i < 0 clears every pending overlay */
 static void set_pending(int i)
 {
-    s_pending = i;
-    g_watch_lo = i < 0 ? 0x80000000u : (g_overlays[i].base & 0x1FFFFFFFu & RAM_MASK);
+    if (i < 0) { s_pend_n = 0; g_watch_lo = 0x80000000u; return; }
+    for (int k = 0; k < s_pend_n;) {
+        if (s_pend[k] == i || overlaps(&g_overlays[s_pend[k]], &g_overlays[i])) drop_pending(k);
+        else k++;
+    }
+    if (s_pend_n == MAX_PENDING) drop_pending(0);
+    if (getenv("RT_DISPATCH_DEBUG")) rt_log("[dispatch] pending %s\n", g_overlays[i].name);
+    s_pend[s_pend_n++] = i;
+    g_watch_lo = g_overlays[i].base & 0x1FFFFFFFu & RAM_MASK;
 }
 
 void dispatch_load_by_lba(int lba)
@@ -157,27 +181,70 @@ void dispatch_load_by_lba(int lba)
     }
 }
 
-void dispatch_watch_hit(u32 off)
-{
-    (void)off;
-    int p = s_pending;
-    set_pending(-1);
-    if (p >= 0) load_idx(p);
-}
-
+/* bulk writes (DMA, runtime copies) over the start of a pending overlay load it */
 void dispatch_notify_write(u32 phys, u32 len)
 {
-    if (s_pending < 0) return;
-    u32 start = g_watch_lo;
-    if (phys + len <= start || phys >= start + 0x800u) return;
-    dispatch_watch_hit(phys);
+    for (int k = 0; k < s_pend_n; k++) {
+        u32 start = g_overlays[s_pend[k]].base & 0x1FFFFFFFu & RAM_MASK;
+        if (phys + len <= start || phys >= start + 0x800u) continue;
+        int idx = s_pend[k];
+        drop_pending(k);
+        load_idx(idx);
+        return;
+    }
 }
 
 void dispatch_clear_pending(void) { set_pending(-1); }
 
+static u32 sig_hash(u32 base, u32 n)
+{
+    u32 h = 2166136261u, o = base & RAM_MASK;
+    for (u32 i = 0; i < n; i++) { h ^= g_ram[(o + i) & RAM_MASK]; h *= 16777619u; }
+    return h;
+}
+
+static int sig_ok(const OverlayDesc *o) { return !o->sig_len || sig_hash(o->base, o->sig_len) == o->sig; }
+
+/* does overlay o define a function at addr? (funcs are sorted by address) */
+static int has_func(const OverlayDesc *o, u32 addr)
+{
+    int lo = 0, hi = o->count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        u32 m = o->funcs[mid].addr;
+        if (m == addr) return 1;
+        if (m < addr) lo = mid + 1; else hi = mid - 1;
+    }
+    return 0;
+}
+
+/* A pending overlay (read from CD) takes over its range when code in that range
+   is first called, unless the active overlay that defines the called function
+   is demonstrably still in RAM (its signature matches), i.e. the new one hasn't
+   been copied into place yet. A matching signature of the pending overlay
+   settles it directly; it often doesn't match because games patch headers. */
+static void check_pending(u32 addr)
+{
+    for (int k = 0; k < s_pend_n; k++) {
+        const OverlayDesc *p = &g_overlays[s_pend[k]];
+        if (addr - p->base >= p->size) continue;
+        int idx = s_pend[k];
+        if (!sig_ok(p)) {
+            for (int i = 0; i < s_active_n; i++) {
+                const OverlayDesc *x = &g_overlays[s_active[i]];
+                if (x->sig_len && has_func(x, addr) && sig_ok(x)) return;   /* old code still there */
+            }
+        }
+        drop_pending(k);
+        load_idx(idx);
+        return;
+    }
+}
+
 void dispatch_call(Cpu *restrict c, u32 addr)
 {
     if (bios_try_dispatch(c, addr)) return;
+    if (UNLIKELY(s_pend_n)) check_pending(addr);
     FuncPtr fn = dispatch_lookup(addr);
     if (UNLIKELY(!fn)) {
         char act[512];
