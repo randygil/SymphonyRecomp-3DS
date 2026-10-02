@@ -50,7 +50,10 @@ static u64 s_next_frame_us;
 int g_frameskip_max = 2;   /* 0 disables automatic frameskip */
 int g_test_onehit, g_test_vclock;
 
-u64 rt_stream_clock_us(void) { return g_test_vclock ? (u64)g_frame_count * 16683u : host_ticks_us(); }
+/* in vclock mode the stream clock is frames plus the polls that found no data:
+   the game spins on StGetNext without a VSync, so time must pass there too */
+u64 g_test_spin_us;
+u64 rt_stream_clock_us(void) { return g_test_vclock ? (u64)g_frame_count * 16683u + g_test_spin_us : host_ticks_us(); }
 
 /* entity table 0x800733D8, stride 0xBC, hit points at +0x3E; enemies live in
    slots 64..255 and 0x7FFF marks invulnerable ones */

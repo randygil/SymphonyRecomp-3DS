@@ -76,7 +76,9 @@ Rendimiento medido en Azahar (O3DS, un solo núcleo):
 | Escena | FPS |
 |--------|-----|
 | Título y menús | 60 |
-| Prólogo jugable | 55-60 (sin frameskip: ~59) |
+| Prólogo jugable (Richter) | 55-60 (sin frameskip: ~59) |
+| Pelea con Drácula del prólogo | sin frameskip: 45-50 |
+| Alucard en la entrada del castillo | sin frameskip: 60-95 |
 | FMV (intro y prólogo) | 15-16, la tasa nativa de los videos |
 
 - **Frameskip automático** (hasta 2 frames seguidos) solo cuando rasterizar es lo caro;

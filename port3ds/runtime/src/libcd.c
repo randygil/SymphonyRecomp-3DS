@@ -431,7 +431,12 @@ void sdk_LibCdStream_StGetNext(Cpu *restrict c)
     }
     if (!st_ready_c) {
         libcdstream_pump();
-        if (!st_ready_c) { c->r[2] = 1; return; }
+        if (!st_ready_c) {
+            extern u64 g_test_spin_us;
+            if (g_test_vclock) g_test_spin_us += 500;
+            c->r[2] = 1;
+            return;
+        }
     }
     int start = st_ready_start[st_ready_r], n = st_ready_n[st_ready_r];
     st_ready_r = (st_ready_r + 1) % MAX_SLOTS;

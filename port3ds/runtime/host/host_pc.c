@@ -292,6 +292,7 @@ int main(int argc, char **argv)
     if (argc > 2) snprintf(s_data_dir, sizeof s_data_dir, "%s", argv[2]);
     s_headless = getenv("RT_HEADLESS") != NULL;
     s_vclock = getenv("RT_VCLOCK") != NULL;
+    g_test_vclock = s_vclock;
     g_test_onehit = getenv("RT_CHEAT_ONEHIT") != NULL;
     if (getenv("RT_PCM") && s_headless) s_pcm = fopen(getenv("RT_PCM"), "wb");
     if (!s_headless) _putenv("RT_NO_GPU_THREAD=1");   /* the SDL renderer must stay on this thread */
