@@ -1,3 +1,4 @@
+#include <stdint.h>
 /* fast paths of the software rasterizer, included by gpu.c.
    Used whenever mask checking (and dithering, unless RT_FAST_NO_DITHER) is off,
    which is the common case; everything else goes through the reference code.
@@ -210,16 +211,60 @@ static const FRectFn s_frect[3][2][3][5] = { VTABLE(frect4_), VTABLE(frect8_), V
 /* blend selector for the tables: 0 opaque, else mode + 1 */
 static inline int bl_index(int semi) { return semi ? blend + 1 : 0; }
 
+/* two pixels at once: 15-bit fields summed per halfword never carry into the
+   other halfword, so blend modes 0/1 work on packed pairs (checked bit-exact
+   against pk_blend0/1 for random inputs) */
+static inline u32 pk2_blend0(u32 b, u32 f)
+{
+    u32 a = b & kreg(0x7FFF7FFFu);
+    return (a + f - ((b ^ f) & kreg(0x04210421u))) >> 1;
+}
+static inline u32 pk2_blend1(u32 b, u32 f)
+{
+    u32 a = b & kreg(0x7FFF7FFFu), sum = a + f;
+    u32 carry = (sum - ((b ^ f) & kreg(0x04210421u))) & kreg(0x84208420u);
+    return (sum - carry) | (carry - (carry >> 5));
+}
+
+#define FILL_PAIRS(EXPR1, EXPR2)                                                            \
+    do {                                                                                    \
+        int i = 0;                                                                          \
+        if (n > 0 && ((uintptr_t)dst & 2)) { dst[0] = (u16)(EXPR1(dst[0])); i = 1; }       \
+        u32 *d32 = (u32 *)(dst + i);                                                        \
+        for (; i + 1 < n; i += 2, d32++) *d32 = EXPR2(*d32);                                \
+        if (i < n) dst[i] = (u16)(EXPR1(dst[i]));                                           \
+    } while (0)
+
 static void fill_span(u16 *dst, int n, u16 c, int semi, u16 mor)
 {
+    u32 c2 = c | ((u32)c << 16), m2 = mor | ((u32)mor << 16);
+    u16 c3 = (u16)((c >> 2) & 0x1CE7);
+    u32 c32 = c3 | ((u32)c3 << 16);
+#define OP0_1(x) (c | mor)
+#define OP0_2(x) (c2 | m2)
+#define OP1_1(x) (pk_blend0(x, c) | mor)
+#define OP1_2(x) (pk2_blend0(x, c2) | m2)
+#define OP2_1(x) (pk_blend1(x, c) | mor)
+#define OP2_2(x) (pk2_blend1(x, c2) | m2)
+#define OP4_1(x) (pk_blend1(x, c3) | mor)
+#define OP4_2(x) (pk2_blend1(x, c32) | m2)
     switch (bl_index(semi)) {
-    case 0: for (int i = 0; i < n; i++) dst[i] = c | mor; break;
-    case 1: for (int i = 0; i < n; i++) dst[i] = PK_BLEND(1, dst[i], c) | mor; break;
-    case 2: for (int i = 0; i < n; i++) dst[i] = PK_BLEND(2, dst[i], c) | mor; break;
+    case 0: FILL_PAIRS(OP0_1, OP0_2); break;
+    case 1: FILL_PAIRS(OP1_1, OP1_2); break;
+    case 2: FILL_PAIRS(OP2_1, OP2_2); break;
     case 3: for (int i = 0; i < n; i++) dst[i] = PK_BLEND(3, dst[i], c) | mor; break;
-    default: for (int i = 0; i < n; i++) dst[i] = PK_BLEND(4, dst[i], c) | mor; break;
+    default: FILL_PAIRS(OP4_1, OP4_2); break;
     }
+#undef OP0_1
+#undef OP0_2
+#undef OP1_1
+#undef OP1_2
+#undef OP2_1
+#undef OP2_2
+#undef OP4_1
+#undef OP4_2
 }
+
 
 /* how the texels of a primitive get their colour; fills m / pal as needed.
    Returns the MOD index and the palette pointer to hand to the span code. */

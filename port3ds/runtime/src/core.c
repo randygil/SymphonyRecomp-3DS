@@ -594,7 +594,9 @@ void rt_log(const char *fmt, ...)
     char buf[1024];
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    fputs(buf, stdout);
+#ifndef __3DS__
+    fputs(buf, stdout);   /* on 3DS the bottom-screen console is too slow to scroll */
+#endif
     if (!s_logf) {
         char p[300];
         snprintf(p, sizeof p, "%s/log.txt", host_data_dir());

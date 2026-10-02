@@ -561,6 +561,22 @@ static void mix_block(s16 *dst, int frames)
     memset(accr, 0, frames * sizeof(int));
     for (int i = 0; i < 24; i++)
         if (on & (1u << i)) mix_voice(&v_[i], i, frames, noise, accl, accr);
+#ifdef RT_SPU_STATS
+    {
+        static u32 blocks, von, vzero, vmute, vquiet;
+        blocks++;
+        for (int i = 0; i < 24; i++) {
+            if (!(on & (1u << i))) continue;
+            von++;
+            if (v_[i].adsr_vol == 0) vzero++;
+            if (v_[i].cur_l == 0 && v_[i].cur_r == 0) vmute++;
+        }
+        if (blocks % 2000 == 0) {
+            rt_log("[spu] voices on %u.%02u, env 0: %u%%, vol 0: %u%%\n", von / 2000, von % 2000 * 100 / 2000, von ? vzero * 100 / von : 0, von ? vmute * 100 / von : 0);
+            von = vzero = vmute = vquiet = 0;
+        }
+    }
+#endif
     for (int n = 0; n < frames; n++) {
         sweep_tick(main_l, &main_cur_l, &main_cyc_l);
         sweep_tick(main_r, &main_cur_r, &main_cyc_r);

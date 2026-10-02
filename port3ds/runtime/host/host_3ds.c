@@ -55,7 +55,17 @@ static void build_lut(void)
 static void present_rows2(u32 *dst, const u16 *r0, const u16 *r1, int n, const u16 *sxt)
 {
     const u16 *lut = s_lut;
-    if (!sxt)
+    if (!sxt && !(((uintptr_t)r0 | (uintptr_t)r1) & 3)) {
+        /* 2x2 blocks: one 32-bit load per row feeds two output columns */
+        const u32 *a = (const u32 *)r0, *b = (const u32 *)r1;
+        int i = 0;
+        for (; i + 1 < n; i += 2, dst += 240) {
+            u32 x = *a++, y = *b++;
+            dst[0] = lut[y & 0xFFFF] | ((u32)lut[x & 0xFFFF] << 16);
+            dst[120] = lut[y >> 16] | ((u32)lut[x >> 16] << 16);
+        }
+        if (i < n) *dst = lut[r1[i]] | ((u32)lut[r0[i]] << 16);
+    } else if (!sxt)
         for (int i = 0; i < n; i++, dst += 120) *dst = lut[r1[i]] | ((u32)lut[r0[i]] << 16);
     else
         for (int i = 0; i < n; i++, dst += 120) *dst = lut[r1[sxt[i]]] | ((u32)lut[r0[sxt[i]]] << 16);
