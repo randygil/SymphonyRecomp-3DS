@@ -48,6 +48,7 @@ typedef struct GpuDisplay {
 
 void gpu_init(void);
 void gpu_write_gp0(u32 w);
+void gpu_write_gp0_block(const u32 *src, u32 n);
 void gpu_write_gp1(u32 w);
 u32 gpu_read_data(void);
 u32 gpu_read_stat(void);

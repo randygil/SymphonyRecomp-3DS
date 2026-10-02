@@ -1,7 +1,8 @@
 #include "rt.h"
 
 u8 g_ram[RAM_SIZE] __attribute__((aligned(4096)));
-static u8 s_scratch[0x400] __attribute__((aligned(16)));
+u8 g_scratch[0x400] __attribute__((aligned(16)));
+#define s_scratch g_scratch
 static u8 s_hw[0x2000] __attribute__((aligned(16)));
 static u8 s_bios[0x80000] __attribute__((aligned(16)));
 

@@ -11,11 +11,26 @@
    MOD: 0 raw texels, 1 texels modulated per pixel through a ModLut,
         2 palette entries modulated up front into a Pal32 (4/8 bit textures). */
 
-static inline u16 pk_blend0(u16 b, u16 f) { return (u16)((((b & 0x7BDE) + (f & 0x7BDE)) >> 1) + (b & f & 0x0421)); }
+/* constants that aren't ARM immediates: hide them from GCC so it loads them
+   into a register instead of expanding each mask into a chain of bic/shifts */
+static inline u32 kreg(u32 k)
+{
+#ifdef __arm__
+    __asm__("" : "+r"(k));
+#endif
+    return k;
+}
+
+/* f never has bit 15 set (callers pass a 15-bit colour) */
+static inline u16 pk_blend0(u16 b, u16 f)
+{
+    u32 a = (u32)b & ~0x8000u, c = f;
+    return (u16)((a + c - (((u32)b ^ c) & kreg(0x0421u))) >> 1);
+}
 static inline u16 pk_blend1(u16 b, u16 f)
 {
-    u32 a = b & 0x7FFF, c = f & 0x7FFF, sum = a + c;
-    u32 carry = (sum - ((a ^ c) & 0x0421)) & 0x8420;
+    u32 a = (u32)b & ~0x8000u, c = f, sum = a + c;
+    u32 carry = (sum - (((u32)b ^ c) & kreg(0x0421u))) & kreg(0x8420u);
     return (u16)((sum - carry) | (carry - (carry >> 5)));
 }
 static inline u16 pk_blend2(u16 b, u16 f)
@@ -56,16 +71,25 @@ static void build_pal(u32 *pal, const u16 *clut, int n, const ModLut *m)
     }
 }
 
+/* texture page origin; tex_fast_ok() guarantees no texel address can wrap
+   around VRAM, so the fast paths index from here without masking */
 #define FAST_LOCALS                                                                         \
-    const int l_tpx = tpx, l_tpy = tpy;                                                     \
+    const u16 *l_tex = g_vram + tpy * VRAM_W + tpx;                                         \
     const u32 l_ua = tw_uand, l_uo = tw_uor, l_va = tw_vand, l_vo = tw_vor;                 \
-    (void)l_tpx; (void)l_tpy; (void)l_ua; (void)l_uo; (void)l_va; (void)l_vo;
+    (void)l_tex; (void)l_ua; (void)l_uo; (void)l_va; (void)l_vo;
+
+/* v <= 255 and tpy is 0 or 256, so rows never wrap; columns only can for
+   8 bit pages at x 960 and 16 bit pages past x 768 (left to the reference code) */
+static inline int tex_fast_ok(void)
+{
+    return tdepth == 0 || (tdepth == 1 && tpx + 128 <= VRAM_W) || (tdepth == 2 && tpx + 256 <= VRAM_W);
+}
 
 /* palette index (4/8 bit) or the texel itself (16 bit) at texture column u of row */
 #define FETCH(DEPTH, row, u)                                                                \
-    ((DEPTH) == 0 ? ((row)[(l_tpx + (int)((u) >> 2)) & (VRAM_W - 1)] >> (((u) & 3) << 2)) & 0xF : \
-     (DEPTH) == 1 ? ((row)[(l_tpx + (int)((u) >> 1)) & (VRAM_W - 1)] >> (((u) & 1) << 3)) & 0xFF : \
-                    (u32)(row)[(l_tpx + (int)(u)) & (VRAM_W - 1)])
+    ((DEPTH) == 0 ? ((row)[(u) >> 2] >> (((u) & 3) << 2)) & 0xF :                           \
+     (DEPTH) == 1 ? ((row)[(u) >> 1] >> (((u) & 1) << 3)) & 0xFF :                           \
+                    (u32)(row)[u])
 
 /* fetched value -> entry: final colour plus bit 15, or PAL_SKIP */
 #define ENTRY(DEPTH, MOD, x, pal, m)                                                        \
@@ -89,14 +113,14 @@ static void build_pal(u32 *pal, const u16 *clut, int n, const ModLut *m)
         }                                                                                   \
     } while (0)
 
-#define TROW(TW, v) (g_vram + (((l_tpy + (int)((TW) ? (((v) & l_va) | l_vo) : (v))) & (VRAM_H - 1)) << 10))
+#define TROW(TW, v) (l_tex + ((int)((TW) ? (((v) & l_va) | l_vo) : (v)) << 10))
 
 /* one sprite row of a 4/8 bit texture without texture window: an unaligned
    head, then one texture word per 4 (or 2) texels, then the tail.
    Always inlined with constant DEPTH/MOD/BL so it specializes fully. */
 static inline __attribute__((always_inline)) void
 frect_row_pal(const int DEPTH, const int MOD, const int BL, u16 *dst, const u16 *row, int px, int x1, u32 u,
-              const void *pal, const ModLut *m, u16 mor, int l_tpx)
+              const void *pal, const ModLut *m, u16 mor)
 {
     const u32 per = DEPTH == 0 ? 4 : 2, bits = DEPTH == 0 ? 4 : 8, msk = DEPTH == 0 ? 0xF : 0xFF;
     u16 *d = dst + px;
@@ -105,7 +129,7 @@ frect_row_pal(const int DEPTH, const int MOD, const int BL, u16 *dst, const u16 
         PUT(BL, d, e, mor);
     }
     for (; x1 - px >= (int)per; px += per, d += per, u = (u + per) & 0xFF) {
-        u32 w = row[(l_tpx + (int)(u / per)) & (VRAM_W - 1)];
+        u32 w = row[u / per];
         u32 e0 = ENTRY(DEPTH, MOD, w & msk, pal, m);
         u32 e1 = ENTRY(DEPTH, MOD, (w >> bits) & msk, pal, m);
         PUT(BL, d, e0, mor);
@@ -134,7 +158,7 @@ frect_row_pal(const int DEPTH, const int MOD, const int BL, u16 *dst, const u16 
             const u16 *row = TROW(TW, (u32)(vbase + py) & 0xFF);                            \
             int px = x0;                                                                    \
             if ((DEPTH) < 2 && !(TW)) {                                                     \
-                frect_row_pal(DEPTH, MOD, BL, dst, row, px, x1, (u32)(ubase + px) & 0xFF, pal, m, mor, l_tpx); \
+                frect_row_pal(DEPTH, MOD, BL, dst, row, px, x1, (u32)(ubase + px) & 0xFF, pal, m, mor); \
                 continue;                                                                   \
             }                                                                               \
             for (; px < x1; px++) {                                                         \
@@ -223,7 +247,7 @@ static int fast_rect(int x0, int x1, int y0, int y1, int x, int y, int u0, int v
         for (int py = y0; py < y1; py++) fill_span(g_vram + py * VRAM_W + x0, x1 - x0, c, semi, mor);
         return 1;
     }
-    if (tdepth == 3) return 0;
+    if (tdepth == 3 || !tex_fast_ok()) return 0;
     ModLut m;
     u32 pal[256];
     const void *p;
@@ -242,6 +266,16 @@ typedef struct { s32 dudx, dvdx, drdx, dgdx, dbdx; } Steps;
     {                                                                                       \
         FAST_LOCALS                                                                         \
         s32 du = st->dudx, dv = st->dvdx;                                                   \
+        if (dv == 0) {                                                                      \
+            const u16 *row = TROW(TW, (u32)(v >> 16) & 0xFF);                               \
+            for (int i = 0; i < n; i++, u += du) {                                          \
+                u32 tu = (u32)(u >> 16) & 0xFF;                                             \
+                if (TW) tu = (tu & l_ua) | l_uo;                                            \
+                u32 e = ENTRY(DEPTH, MOD, FETCH(DEPTH, row, tu), pal, m);                   \
+                PUT(BL, dst + i, e, mor);                                                   \
+            }                                                                               \
+            return;                                                                         \
+        }                                                                                   \
         for (int i = 0; i < n; i++, u += du, v += dv) {                                     \
             u32 tu = (u32)(u >> 16) & 0xFF;                                                 \
             if (TW) tu = (tu & l_ua) | l_uo;                                                \
@@ -258,29 +292,46 @@ VARIANTS(FS4)
 VARIANTS(FS8)
 VARIANTS16(FS16)
 
-/* gouraud textured: per pixel modulation */
+/* gouraud textured: per pixel modulation. Done in two passes over the span
+   (texels into a buffer, then shade + blend) so that each loop's state fits in
+   the ARM11 registers; the one-pass version spilled five steps per pixel. */
+#define TG_CHUNK 64
 #define DEF_FSPAN_TG(NAME, DEPTH, BL, TW)                                                   \
     static void NAME(u16 *dst, int n, s32 u, s32 v, s32 r, s32 g, s32 b, const Steps *st,   \
                      const u16 *clut, u16 mor)                                              \
     {                                                                                       \
         FAST_LOCALS                                                                         \
-        s32 du = st->dudx, dv = st->dvdx, dr = st->drdx, dg = st->dgdx, db_ = st->dbdx;     \
-        for (int i = 0; i < n; i++, u += du, v += dv, r += dr, g += dg, b += db_) {         \
-            u32 tu = (u32)(u >> 16) & 0xFF;                                                 \
-            if (TW) tu = (tu & l_ua) | l_uo;                                                \
-            const u16 *row = TROW(TW, (u32)(v >> 16) & 0xFF);                               \
-            u32 x = FETCH(DEPTH, row, tu);                                                  \
-            u16 t = (DEPTH) < 2 ? clut[x] : (u16)x;                                         \
-            if (!t) continue;                                                               \
-            u32 fr = ((t & 31) * (u32)(r >> 16)) >> 7;                                      \
-            u32 fg = (((t >> 5) & 31) * (u32)(g >> 16)) >> 7;                               \
-            u32 fb = (((t >> 10) & 31) * (u32)(b >> 16)) >> 7;                              \
-            if (fr > 31) fr = 31;                                                           \
-            if (fg > 31) fg = 31;                                                           \
-            if (fb > 31) fb = 31;                                                           \
-            u16 o = (u16)(fr | (fg << 5) | (fb << 10));                                     \
-            if ((BL) && (t & 0x8000)) o = PK_BLEND(BL, dst[i], o);                          \
-            dst[i] = o | (t & 0x8000) | mor;                                                \
+        u16 tb[TG_CHUNK];                                                                   \
+        while (n > 0) {                                                                     \
+            int c = n < TG_CHUNK ? n : TG_CHUNK;                                            \
+            {                                                                               \
+                s32 du = st->dudx, dv = st->dvdx;                                           \
+                for (int i = 0; i < c; i++, u += du, v += dv) {                             \
+                    u32 tu = (u32)(u >> 16) & 0xFF;                                         \
+                    if (TW) tu = (tu & l_ua) | l_uo;                                        \
+                    const u16 *row = TROW(TW, (u32)(v >> 16) & 0xFF);                       \
+                    u32 x = FETCH(DEPTH, row, tu);                                          \
+                    tb[i] = (DEPTH) < 2 ? clut[x] : (u16)x;                                 \
+                }                                                                           \
+            }                                                                               \
+            {                                                                               \
+                s32 dr = st->drdx, dg = st->dgdx, db_ = st->dbdx;                           \
+                for (int i = 0; i < c; i++, r += dr, g += dg, b += db_) {                   \
+                    u32 t = tb[i];                                                          \
+                    if (!t) continue;                                                       \
+                    u32 fr = ((t & 31) * (u32)(r >> 16)) >> 7;                              \
+                    u32 fg = (((t >> 5) & 31) * (u32)(g >> 16)) >> 7;                       \
+                    u32 fb = (((t >> 10) & 31) * (u32)(b >> 16)) >> 7;                      \
+                    if (fr > 31) fr = 31;                                                   \
+                    if (fg > 31) fg = 31;                                                   \
+                    if (fb > 31) fb = 31;                                                   \
+                    u16 o = (u16)(fr | (fg << 5) | (fb << 10));                             \
+                    if ((BL) && (t & 0x8000)) o = PK_BLEND(BL, dst[i], o);                  \
+                    dst[i] = o | (u16)(t & 0x8000) | mor;                                   \
+                }                                                                           \
+            }                                                                               \
+            dst += c;                                                                       \
+            n -= c;                                                                         \
         }                                                                                   \
     }
 
@@ -315,6 +366,20 @@ DEF_GSPAN(gspan0, 0) DEF_GSPAN(gspan1, 1) DEF_GSPAN(gspan2, 2) DEF_GSPAN(gspan3,
 typedef void (*GSpanFn)(u16 *, int, s32, s32, s32, const Steps *, u16);
 static const GSpanFn s_gspan[5] = { gspan0, gspan1, gspan2, gspan3, gspan4 };
 
+/* 4 bit palette shaded by one colour, exactly as DEF_FSPAN_TG would shade it */
+static void build_pal16_shaded(u32 *pal, const u16 *clut, u32 cr, u32 cg, u32 cb)
+{
+    for (int i = 0; i < 16; i++) {
+        u32 t = clut[i];
+        if (!t) { pal[i] = PAL_SKIP; continue; }
+        u32 fr = ((t & 31) * cr) >> 7, fg = (((t >> 5) & 31) * cg) >> 7, fb = (((t >> 10) & 31) * cb) >> 7;
+        if (fr > 31) fr = 31;
+        if (fg > 31) fg = 31;
+        if (fb > 31) fb = 31;
+        pal[i] = fr | (fg << 5) | (fb << 10) | (t & 0x8000);
+    }
+}
+
 /* returns 1 if handled */
 /* gradients are rounded: truncation turns exact 1:1 mappings into 0xFFFF steps */
 static inline s32 rnd16(double x) { return (s32)(x >= 0 ? x + 0.5 : x - 0.5); }
@@ -340,7 +405,7 @@ static int fast_tri(const Vtx *a, const Vtx *b, const Vtx *c, int flags, int clu
         }
     }
     if (!RT_FAST_NO_DITHER && dither_on && (tex ? !raw : gour)) return 0;
-    if (tex && tdepth == 3) return 0;
+    if (tex && (tdepth == 3 || !tex_fast_ok())) return 0;
 
     int minx = a->x < b->x ? (a->x < c->x ? a->x : c->x) : (b->x < c->x ? b->x : c->x);
     int maxx = a->x > b->x ? (a->x > c->x ? a->x : c->x) : (b->x > c->x ? b->x : c->x);
@@ -372,11 +437,21 @@ static int fast_tri(const Vtx *a, const Vtx *b, const Vtx *c, int flags, int clu
     FSpanT ft = NULL;
     FSpanTG ftg = NULL;
     FRectFn rowfn = NULL;
+    /* 4 bit gouraud with a purely vertical colour gradient: each span has a single
+       colour, so shade the palette once per colour and use the flat span code */
+    int gflat = 0;
+    u32 gkey = 0xFFFFFFFFu;
     if (tex) {
         int tw = tw_uand != 0xFF || tw_uor || tw_vand != 0xFF || tw_vor;
         if (gour) {
             cl = clut_ptr(clut);
             ftg = s_fspang[tdepth][tw][bl];
+            if (tdepth == 0 && st.drdx == 0 && st.dgdx == 0 && st.dbdx == 0) {
+                gflat = 1;
+                ft = s_fspan[0][tw][2][bl];
+                if (st.dvdx == 0 && st.dudx == 0x10000) rowfn = s_frect[0][tw][2][bl];
+                p = pal;
+            }
         } else {
             int area = (den < 0 ? -den : den) / 2;
             int mod = setup_colour(raw, a->r, a->g, a->b, clut, area, &m, pal, &p);
@@ -434,6 +509,16 @@ static int fast_tri(const Vtx *a, const Vtx *b, const Vtx *c, int flags, int clu
             s32 u = u0 + st.dudx * dx + dudy * dy, v = v0 + st.dvdx * dx + dvdy * dy;
             if (gour) {
                 s32 r = r0 + st.drdx * dx + drdy * dy, g = g0 + st.dgdx * dx + dgdy * dy, bb = b0 + st.dbdx * dx + dbdy * dy;
+                if (gflat) {
+                    u32 cr = (u32)(r >> 16), cg = (u32)(g >> 16), cb = (u32)(bb >> 16);
+                    if ((cr | cg | cb) <= 255) {   /* in range: the palette math is identical */
+                        u32 key = cr | (cg << 8) | (cb << 16);
+                        if (key != gkey) { gkey = key; build_pal16_shaded(pal, cl, cr, cg, cb); }
+                        if (rowfn) rowfn(x0, x1, y, y + 1, (u >> 16) - x0, (v >> 16) - y, p, &m, mor);
+                        else ft(dst, n, u, v, &st, p, &m, mor);
+                        continue;
+                    }
+                }
                 ftg(dst, n, u, v, r, g, bb, &st, cl, mor);
             } else if (rowfn) {
                 /* affine-free span: v constant, u advancing one texel per pixel */

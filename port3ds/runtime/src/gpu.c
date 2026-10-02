@@ -9,7 +9,7 @@
    GP0/GP1 word for the worker copy (gpu_worker.c), which rasterizes on the
    second CPU core and presents finished frames. VRAM reads drain the queue. */
 
-enum { Q_GP0, Q_GP1, Q_PRESENT, Q_BAND, Q_SKIP };
+enum { Q_GP0, Q_GP1, Q_PRESENT, Q_BAND, Q_SKIP, Q_LOAD };
 
 u16 g_vram[VRAM_W * VRAM_H] __attribute__((aligned(64)));
 
@@ -25,6 +25,8 @@ void gpuw_write_gp0(u32 w);
 void gpuw_write_gp1(u32 w);
 void gpus_set_band(int n, const int *lo, const int *hi);
 void gpus_set_skip(int s);
+u32 gpus_load_block(const u32 *src, u32 n);
+u32 gpuw_load_block(const u32 *src, u32 n);
 void gpuw_set_skip(int s);
 void gpuw_set_band(int n, const int *lo, const int *hi);
 
@@ -86,6 +88,7 @@ static void worker(void *arg)
             case Q_GP1: gpuw_write_gp1(d); break;
             case Q_BAND: worker_band((int)d); break;
             case Q_SKIP: gpuw_set_skip((int)d); break;
+            case Q_LOAD: gpuw_load_block(NULL, d); break;
             case Q_PRESENT:
                 host_present(&s_disp_ring[d & 3]);
                 barrier();
@@ -148,6 +151,22 @@ void gpu_write_gp0(u32 w)
 {
     if (s_threaded) push(Q_GP0, w);
     gpus_write_gp0(w);
+}
+
+/* DMA to GP0: image data goes straight to VRAM in row segments */
+void gpu_write_gp0_block(const u32 *src, u32 n)
+{
+    while (n) {
+        u32 k = gpus_load_block(src, n);
+        if (k) {
+            if (s_threaded) push(Q_LOAD, k);
+            src += k;
+            n -= k;
+            continue;
+        }
+        gpu_write_gp0(*src++);
+        n--;
+    }
 }
 
 void gpu_write_gp1(u32 w)

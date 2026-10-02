@@ -48,7 +48,8 @@ static u32 fifo[FIFO_MAX];
 static int fifo_n, need;
 static int polyline;
 
-static int load_active, load_x, load_y, load_w, load_h, load_px;
+/* image upload in progress; load_col/load_row track load_px (no divisions) */
+static int load_active, load_x, load_y, load_w, load_h, load_px, load_col, load_row;
 static int read_active, read_x, read_y, read_w, read_h, read_px;
 
 /* derived texture-window masks */
@@ -640,28 +641,65 @@ static void copy_vram(void)
 static void store_image_hw(u16 value)
 {
     u16 stored = set_mask ? (u16)(value | 0x8000) : value;
-    int x = (load_x + (load_px % load_w)) & (VRAM_W - 1);
-    int y = (load_y + (load_px / load_w)) & (VRAM_H - 1);
+    int x = (load_x + load_col) & (VRAM_W - 1);
+    int y = (load_y + load_row) & (VRAM_H - 1);
     u16 *p = &g_vram[y * VRAM_W + x];
     if (XFER && !(check_mask && (*p & 0x8000))) *p = stored;
+    if (++load_col >= load_w) { load_col = 0; load_row++; }
     if (++load_px >= load_w * load_h) load_active = 0;
 }
 
 /* fast path for whole words while an image upload is active */
 static void store_image_word(u32 w)
 {
-    int col = load_px % load_w;
+    int col = load_col;
     if (XFER && !set_mask && !check_mask && col + 2 <= load_w && load_x + col + 2 <= VRAM_W) {
-        int y = (load_y + (load_px / load_w)) & (VRAM_H - 1);
+        int y = (load_y + load_row) & (VRAM_H - 1);
         u16 *p = &g_vram[y * VRAM_W + load_x + col];
         p[0] = (u16)w;
         p[1] = (u16)(w >> 16);
+        if ((load_col += 2) >= load_w) { load_col = 0; load_row++; }
         load_px += 2;
         if (load_px >= load_w * load_h) load_active = 0;
         return;
     }
     store_image_hw((u16)w);
     if (load_active) store_image_hw((u16)(w >> 16));
+}
+
+/* bulk words of an image upload (DMA): whole row segments at a time. Returns how
+   many words were consumed (stops when the upload ends). The worker copy calls
+   it with src == NULL to advance its counters in step with the main copy. */
+u32 GPUFN(load_block)(const u32 *src, u32 n)
+{
+    u32 done = 0;
+    while (done < n && load_active) {
+        int rem = load_w - load_col;
+        int fast = rem >= 2 && (!XFER || (src && !set_mask && !check_mask && load_x + load_col + 2 <= VRAM_W));
+        if (!fast) {
+            store_image_word(src ? src[done] : 0);
+            done++;
+            continue;
+        }
+        u32 k = (u32)(rem / 2);
+        if (XFER) {
+            u32 lim = (u32)(VRAM_W - (load_x + load_col)) / 2;
+            if (lim < k) k = lim;
+        }
+        if (k > n - done) k = n - done;
+        u32 left = (u32)(load_w * load_h - load_px + 1) / 2;   /* words until the upload ends */
+        if (k > left) k = left;
+        if (XFER) {
+            int y = (load_y + load_row) & (VRAM_H - 1);
+            memcpy(&g_vram[y * VRAM_W + load_x + load_col], src + done, k * 4);
+        }
+        load_col += (int)k * 2;
+        if (load_col >= load_w) { load_col = 0; load_row++; }
+        load_px += (int)k * 2;
+        if (load_px >= load_w * load_h) load_active = 0;
+        done += k;
+    }
+    return done;
 }
 
 static int cmd_len(u32 w)
@@ -729,7 +767,7 @@ static void execute(void)
         load_y = (int)((fifo[1] >> 16) & 0x1FF);
         load_w = (int)(fifo[2] & 0xFFFF); load_w = load_w == 0 ? 0x400 : (load_w & 0x3FF) ? (load_w & 0x3FF) : 0x400;
         load_h = (int)((fifo[2] >> 16) & 0xFFFF); load_h = load_h == 0 ? 0x200 : (load_h & 0x1FF) ? (load_h & 0x1FF) : 0x200;
-        load_px = 0;
+        load_px = load_col = load_row = 0;
         load_active = 1;
     } else if (op >= 0xC0 && op <= 0xDF) {
         if (XFER) gpu_front_sync();   /* the worker must finish drawing before VRAM is read */

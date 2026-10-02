@@ -135,26 +135,20 @@ static void modulate(int sf, int lm)
     push_color();
 }
 
-static int clz16(u32 v)
-{
-    int n = 0;
-    for (int i = 15; i >= 0 && !(v & (1u << i)); i--) n++;
-    return n;
-}
-
+/* UNR division. Past the overflow check sz3 >= 1 and h < 2 * sz3, so after
+   normalizing d is in [0x8000, 0xFFFF] and n < 2^17: everything but the final
+   product fits in 32 bits (same results as the 64-bit reference). */
 static u32 divide(u32 h, u32 sz3)
 {
     if (h >= sz3 * 2) { FL(17); return 0x1FFFF; }
-    int z = clz16(sz3);
-    u64 n = (u64)h << z;
-    u64 d = (u64)sz3 << z;
-    s64 idx = (s64)((d - 0x7FC0) >> 7);
-    if ((s64)d - 0x7FC0 < 0) idx = 0;
-    if (idx < 0) idx = 0; else if (idx > 0x100) idx = 0x100;
-    u64 u = (u64)s_unr[idx] + 0x101;
-    d = (0x2000080ULL - d * u) >> 8;
-    d = (0x0000080ULL + d * u) >> 8;
-    u64 res = (n * d + 0x8000) >> 16;
+    int z = __builtin_clz(sz3) - 16;
+    u32 n = h << z;
+    u32 d = sz3 << z;
+    u32 idx = (d - 0x7FC0) >> 7;
+    u32 u = (u32)s_unr[idx] + 0x101;
+    d = (0x2000080u - d * u) >> 8;
+    d = (0x0000080u + d * u) >> 8;
+    u64 res = ((u64)n * d + 0x8000) >> 16;
     return res > 0x1FFFF ? 0x1FFFFu : (u32)res;
 }
 

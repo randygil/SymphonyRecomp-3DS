@@ -36,14 +36,26 @@ void spu_lock(void)
 void spu_unlock(void) { LightLock_Unlock(&s_spu_lock); }
 
 /* ---------------- video ---------------- */
-static u16 s_lut[0x8000];   /* bgr555 -> rgb565 */
+/* bgr555 -> rgb565, indexed with the mask bit too so no masking is needed */
+static u16 s_lut[0x10000];
 
 static void build_lut(void)
 {
-    for (int p = 0; p < 0x8000; p++) {
+    for (int p = 0; p < 0x10000; p++) {
         int r = p & 31, g = (p >> 5) & 31, b = (p >> 10) & 31;
         s_lut[p] = (u16)((r << 11) | (((g << 1) | (g >> 4)) << 5) | b);
     }
+}
+
+/* two source rows into the column-major framebuffer: pixels (x, y) and (x, y + 1)
+   are adjacent (y + 1 first), so each pair is one aligned 32-bit store */
+static void present_rows2(u32 *dst, const u16 *r0, const u16 *r1, int n, const u16 *sxt)
+{
+    const u16 *lut = s_lut;
+    if (!sxt)
+        for (int i = 0; i < n; i++, dst += 120) *dst = lut[r1[i]] | ((u32)lut[r0[i]] << 16);
+    else
+        for (int i = 0; i < n; i++, dst += 120) *dst = lut[r1[sxt[i]]] | ((u32)lut[r0[sxt[i]]] << 16);
 }
 
 int host_thread_start(void (*fn)(void *), void *arg, int core)
@@ -95,7 +107,17 @@ void host_present(const struct GpuDisplay *dp)
             sx_w = w;
             sx_outw = outw;
         }
-        for (int oy = 0; oy < h; oy++) {
+        int oy = 0;
+        /* fast path: pairs of rows, when the pair lands 32-bit aligned */
+        if (!d.rgb24 && d.x + w <= VRAM_W && !(y0 & 1)) {
+            const u16 *sxt = outw == w ? NULL : sxtab;
+            for (; oy + 1 < h; oy += 2) {
+                int sy0 = (d.y + oy * ystep) & (VRAM_H - 1), sy1 = (d.y + (oy + 1) * ystep) & (VRAM_H - 1);
+                u32 *dst = (u32 *)(fb + x0 * 240 + (239 - y0 - oy - 1));
+                present_rows2(dst, g_vram + sy0 * VRAM_W + d.x, g_vram + sy1 * VRAM_W + d.x, outw, sxt);
+            }
+        }
+        for (; oy < h; oy++) {
             /* framebuffer is column major: pixel (x, y) at x * 240 + 239 - y */
             u16 *col = fb + x0 * 240 + (239 - y0 - oy);
             int sy = (d.y + oy * ystep) & (VRAM_H - 1);
@@ -136,9 +158,11 @@ void host_present(const struct GpuDisplay *dp)
             rt_log("[fps] %d game %d  gpu %llu present %llu idle %llu spuwait %llu cd %llu mdec %llu spumix %llu worker %llu sync %llu (ms/s)\n", s_fps, s_game_fps,
                    g_prof[PROF_GPU] / 5000, g_prof[PROF_PRESENT] / 5000, g_prof[PROF_IDLE] / 5000,
                    g_prof[PROF_SPU_WAIT] / 5000, g_prof[PROF_CD] / 5000, g_prof[PROF_MDEC] / 5000, g_prof[PROF_SPU_MIX] / 5000, g_prof[PROF_WORKER] / 5000, g_prof[PROF_SYNC] / 5000);
+#ifdef RT_GPU_PROF
             rt_log("      gpu detail: tri %llu (setup %llu) rect %llu fill %llu (ms/s) tris/s %u spans/s %u\n", g_prof[PROF_G_TRI] / 5000,
                    g_prof[PROF_G_SETUP] / 5000, g_prof[PROF_G_RECT] / 5000, g_prof[PROF_G_FILL] / 5000, g_tri_calls / 5, g_tri_spans / 5);
             g_tri_calls = g_tri_spans = 0;
+#endif
             memset(g_prof, 0, sizeof g_prof);
         }
     }

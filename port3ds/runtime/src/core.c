@@ -220,7 +220,11 @@ void dma_run(int ch, u32 madr, u32 bcr, u32 chcr)
     case 2: {
         u32 sync = (chcr >> 9) & 3u;
         if (sync == 2) { u64 t = host_ticks_us(); gpu_linked_list(madr); g_prof[PROF_GPU] += host_ticks_us() - t; }
-        else if (chcr & 1u) { u32 n = word_count(bcr); for (u32 i = 0; i < n; i++) gpu_write_gp0(RD32(madr + i * 4u)); }
+        else if (chcr & 1u) {
+            u32 n = word_count(bcr), o = madr & RAM_MASK;
+            if (IS_RAM(madr) && !(o & 3) && o + n * 4 <= RAM_SIZE) gpu_write_gp0_block((const u32 *)(g_ram + o), n);
+            else for (u32 i = 0; i < n; i++) gpu_write_gp0(RD32(madr + i * 4u));
+        }
         else { u32 n = word_count(bcr); for (u32 i = 0; i < n; i++) WR32(madr + i * 4u, gpu_read_data()); }
         break;
     }
