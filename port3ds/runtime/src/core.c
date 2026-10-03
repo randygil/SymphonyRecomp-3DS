@@ -86,9 +86,22 @@ static u32 throttle(void)
     return (u32)(now - s_next_frame_us);
 }
 
+u32 g_worst_frame_us, g_late_frames;   /* per log window, reset by the host */
+
 void rt_present_frame(void)
 {
     if (!host_running()) rt_fatal("quit");
+    {
+        /* longest game frame (VSync to VSync, including any wait) */
+        static u64 last;
+        u64 now = host_ticks_us();
+        if (last) {
+            u32 d = (u32)(now - last);
+            if (d > g_worst_frame_us) g_worst_frame_us = d;
+            if (d > 20000) g_late_frames++;
+        }
+        last = now;
+    }
     static u64 s_draw_mark, s_draw_cost;
     /* The game double buffers: what the GPU draws during one frame is put on
        display at the next VSync, so the image shown now was drawn during the

@@ -308,6 +308,77 @@ static int setup_colour(int raw, int cr, int cg, int cb, int clut, int area, con
     return 1;
 }
 
+/* ---- 4 bit opaque sprites through a pair table ----
+   Background tiles are 4 bit, unblended and unmodulated. A table indexed by a
+   texture byte gives both of its texels already looked up (low texel in the
+   low halfword), so there is one lookup per two pixels, and when both are
+   non-transparent and the destination is word aligned a single 32-bit store.
+   Tables are cached by CLUT contents (a handful of CLUTs cover a room). */
+#define PAIR_SLOTS 8
+typedef struct { u16 clut[16]; u32 tab[256]; u32 used; } PairTab;
+
+static const u32 *pair_table(const u16 *cl)
+{
+    static PairTab slots[PAIR_SLOTS];
+    static u32 clock;
+    int victim = 0;
+    for (int i = 0; i < PAIR_SLOTS; i++) {
+        if (slots[i].used && !memcmp(slots[i].clut, cl, 32)) { slots[i].used = ++clock; return slots[i].tab; }
+        if (slots[i].used < slots[victim].used) victim = i;
+    }
+    PairTab *t = &slots[victim];
+    memcpy(t->clut, cl, 32);
+    for (int i = 0; i < 256; i++) t->tab[i] = cl[i & 15] | ((u32)cl[i >> 4] << 16);
+    t->used = ++clock;
+    return t->tab;
+}
+
+static inline void put_pair(u16 *d, u32 pr, int aligned)
+{
+    /* no zero halfword (exact "has zero element" test) -> both texels opaque */
+    if (!((pr - kreg(0x00010001u)) & ~pr & kreg(0x80008000u))) {
+        if (aligned) *(u32 *)d = pr;
+        else { d[0] = (u16)pr; d[1] = (u16)(pr >> 16); }
+    } else {
+        if (pr & 0xFFFF) d[0] = (u16)pr;
+        if (pr >> 16) d[1] = (u16)(pr >> 16);
+    }
+}
+
+static void frect4_pairs(int x0, int x1, int y0, int y1, int ubase, int vbase, const u16 *cl, const u32 *tab)
+{
+    FAST_LOCALS
+    for (int py = y0; py < y1; py++) {
+        u16 *dst = g_vram + py * VRAM_W;
+        const u16 *row = TROW(0, (u32)(vbase + py) & 0xFF);
+        int px = x0;
+        u32 u = (u32)(ubase + px) & 0xFF;
+        /* head: up to a texture word boundary */
+        for (; px < x1 && (u & 3); px++, u = (u + 1) & 0xFF) {
+            u16 t = cl[(row[u >> 2] >> ((u & 3) << 2)) & 0xF];
+            if (t) dst[px] = t;
+        }
+        u16 *d = dst + px;
+        if (!((uintptr_t)d & 2)) {
+            for (; x1 - px >= 4; px += 4, d += 4, u = (u + 4) & 0xFF) {
+                u32 w = row[u >> 2];
+                put_pair(d, tab[w & 0xFF], 1);
+                put_pair(d + 2, tab[w >> 8], 1);
+            }
+        } else {
+            for (; x1 - px >= 4; px += 4, d += 4, u = (u + 4) & 0xFF) {
+                u32 w = row[u >> 2];
+                put_pair(d, tab[w & 0xFF], 0);
+                put_pair(d + 2, tab[w >> 8], 0);
+            }
+        }
+        for (; px < x1; px++, u = (u + 1) & 0xFF) {
+            u16 t = cl[(row[u >> 2] >> ((u & 3) << 2)) & 0xF];
+            if (t) dst[px] = t;
+        }
+    }
+}
+
 /* returns 1 if handled */
 static int fast_rect(int x0, int x1, int y0, int y1, int x, int y, int u0, int v0, int clut,
                      int cr, int cg, int cb, int tex, int semi, int raw)
@@ -325,6 +396,10 @@ static int fast_rect(int x0, int x1, int y0, int y1, int x, int y, int u0, int v
     const void *p;
     int mod = setup_colour(raw, cr, cg, cb, clut, (x1 - x0) * (y1 - y0), &m, pal, &p);
     int tw = tw_uand != 0xFF || tw_uor || tw_vand != 0xFF || tw_vor;
+    if (tdepth == 0 && !tw && mod == 0 && !semi && !set_mask && (x1 - x0) >= 8) {
+        frect4_pairs(x0, x1, y0, y1, u0 - x, v0 - y, (const u16 *)p, pair_table((const u16 *)p));
+        return 1;
+    }
     s_frect[tdepth][tw][mod][bl_index(semi)](x0, x1, y0, y1, u0 - x, v0 - y, p, m, set_mask ? 0x8000 : 0);
     return 1;
 }

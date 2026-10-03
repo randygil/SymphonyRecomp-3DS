@@ -437,7 +437,11 @@ static void set_texpage(u32 tp)
 }
 
 #ifdef RT_GPU_STATS
+#if GPU_MAIN
 u32 g_quad_rect[2];   /* textured quads: [0] drawn as rects, [1] total */
+#else
+extern u32 g_quad_rect[2];
+#endif
 #endif
 
 /* A textured quad laid out as an axis-aligned rectangle (TL, TR, BL, BR) with

@@ -221,6 +221,20 @@ void host_present(const struct GpuDisplay *dp)
             g_prof[PROF_G_TRI] = g_prof[PROF_G_RECT] = g_prof[PROF_G_FILL] = 0;
         }
     }
+    {
+        /* per-frame cost trace: frame, tris, tri px, rects, rect px, quads as rects, game us */
+        static FILE *csv;
+        static LARGE_INTEGER last, fq;
+        extern u32 g_quad_rect[2];
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (!fq.QuadPart) QueryPerformanceFrequency(&fq);
+        if (!csv) { char p[300]; snprintf(p, sizeof p, "%s/gpu_frames.csv", s_data_dir); csv = fopen(p, "w"); }
+        if (csv) fprintf(csv, "%u,%u,%u,%u,%u,%u,%lld\n", g_frame_count, g_gst[0], g_gst[1], g_gst[2], g_gst[3], g_quad_rect[0],
+                         last.QuadPart ? (long long)((now.QuadPart - last.QuadPart) * 1000000 / fq.QuadPart) : 0);
+        last = now;
+        g_quad_rect[0] = g_quad_rect[1] = 0;
+    }
     memset(g_gst, 0, sizeof g_gst);
 #endif
     int w, h;

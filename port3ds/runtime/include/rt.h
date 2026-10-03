@@ -63,7 +63,8 @@ extern int g_frameskip_max;
    g_test_vclock paces CD streaming by frames instead of the wall clock, so
    scripted input runs the same way on PC and 3DS */
 extern int g_test_onehit, g_test_vclock, g_test_force_skip;
-extern int g_present_lag;   /* frames between drawing and display (see rt_present_frame) */   /* force_skip=n: skip n of n+1 frames */
+extern int g_present_lag;
+extern u32 g_worst_frame_us, g_late_frames;   /* frames between drawing and display (see rt_present_frame) */   /* force_skip=n: skip n of n+1 frames */
 u64 rt_stream_clock_us(void);
 
 /* ---- SPU / XA ---- */

@@ -177,6 +177,8 @@ void host_present(const struct GpuDisplay *dp)
         if (s_show_fps) printf("\x1b[29;1Hfps %2d (game %2d)   ", s_fps, s_game_fps);
         static int sec;
         if (++sec % 5 == 0) {
+            rt_log("[frame] worst %u.%u ms, %u frames over 20 ms\n", g_worst_frame_us / 1000, g_worst_frame_us / 100 % 10, g_late_frames);
+            g_worst_frame_us = g_late_frames = 0;
             rt_log("[fps] %d game %d  gpu %llu present %llu idle %llu spuwait %llu cd %llu mdec %llu spumix %llu worker %llu sync %llu (ms/s)\n", s_fps, s_game_fps,
                    g_prof[PROF_GPU] / 5000, g_prof[PROF_PRESENT] / 5000, g_prof[PROF_IDLE] / 5000,
                    g_prof[PROF_SPU_WAIT] / 5000, g_prof[PROF_CD] / 5000, g_prof[PROF_MDEC] / 5000, g_prof[PROF_SPU_MIX] / 5000, g_prof[PROF_WORKER] / 5000, g_prof[PROF_SYNC] / 5000);
