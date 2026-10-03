@@ -29,20 +29,27 @@ README principal.
 
 ```sh
 cd port3ds
-./build_3ds.sh          # genera build/3ds/SymphonyRecomp.3dsx
+./build_3ds.sh          # genera build/3ds/SymphonyRecomp.3dsx (y el .cia, ver abajo)
 ./build_3ds.sh pc       # además compila el host de prueba de PC
 ```
+
+Para el `.cia` hacen falta `makerom` (releases de 3DSGuy/Project_CTR) y `bannertool`
+(releases de diasurgical/bannertool) en `build/tools/` (`makerom.exe` y
+`bt/windows-x86_64/bannertool.exe`). El CIA usa el modo de memoria normal (*Prod*,
+64 MB) y su configuración está en `cia/app.rsf`.
 
 ## Instalar en la SD
 
 ```
-sdmc:/3ds/SymphonyRecomp.3dsx
+sdmc:/cias/SymphonyRecomp.cia      (instalar con FBI; recomendado)
+sdmc:/3ds/SymphonyRecomp.3dsx      (alternativa desde el Homebrew Launcher)
 sdmc:/3ds/sotn/Castlevania - Symphony of the Night (USA).cue
 sdmc:/3ds/sotn/Castlevania - Symphony of the Night (USA) (Track 1).bin
 sdmc:/3ds/sotn/Castlevania - Symphony of the Night (USA) (Track 2).bin
 ```
 
-Se abre desde el Homebrew Launcher **en modo título** (en Luma3DS: mantener R al abrir
+Instalado como CIA tiene toda la memoria de aplicación. El `.3dsx` se abre desde el
+Homebrew Launcher **en modo título** (en Luma3DS: mantener R al abrir
 un juego instalado), porque necesita casi toda la memoria de aplicación de la O3DS
 (64 MB): el ejecutable ocupa ~39 MB (33 MB de código del juego recompilado + 6 MB de
 BSS) y en ejecución se reservan otros ~15 MB (pila del juego, audio, buffers). Lanzado
@@ -67,22 +74,26 @@ PSX) y el registro en `sdmc:/3ds/sotn/log.txt`.
 
 ## Estado
 
-Probado en Azahar en modo 3DS original: intro FMV, logo, título, selección de archivo,
-entrada de nombre y prólogo jugable (Richter en el castillo de Drácula). Falta probarlo
-en hardware real.
+Probado en Azahar en modo 3DS original con una partida guionizada que va de la intro
+al prólogo con Richter, la pelea con Drácula (ambas formas) y Alucard en la entrada del
+castillo. Falta probarlo en hardware real.
 
-Rendimiento medido en Azahar (O3DS, un solo núcleo):
+Rendimiento medido en Azahar (O3DS, un solo núcleo). "Bruto" es sin frameskip ni
+límite de 60 Hz (`bench.txt`):
 
-| Escena | FPS |
-|--------|-----|
-| Título y menús | 60 |
-| Prólogo jugable (Richter) | 55-60 (sin frameskip: ~59) |
-| Pelea con Drácula del prólogo | sin frameskip: 45-50 |
-| Alucard en la entrada del castillo | sin frameskip: 60-95 |
-| FMV (intro y prólogo) | 15-16, la tasa nativa de los videos |
+| Escena | En juego (FPS mostrados / lógica) | Bruto |
+|--------|-----------------------------------|-------|
+| Título y menús | 60 / 60 | |
+| Prólogo (Richter) | 60 / 60 | ~84 |
+| Pelea con Drácula | 60 / 60 | 66-68 |
+| Explosión final de Drácula | ~27 / 40 | |
+| Entrada del castillo con zombis en llamas (Alucard) | 42-60 / 60 | 50-70 |
+| Salas del castillo | 60 / 60 | ~105 |
+| FMV (intro y prólogo) | 15-16, la tasa nativa de los videos | |
 
 - **Frameskip automático** (hasta 2 frames seguidos) solo cuando rasterizar es lo caro;
-  la lógica del juego siempre corre a 60 Hz.
+  la lógica del juego sigue a 60 Hz. Como el juego usa doble búfer, se presenta según
+  si se dibujó el frame anterior (presentar el búfer no dibujado congelaba la imagen).
 - En hardware real la GPU reparte la rasterización entre los dos núcleos (franjas de
   filas balanceadas dinámicamente) y el audio corre en el núcleo 1. Azahar mantiene los
   hilos de un `.3dsx` en el núcleo 0, así que ahí el runtime lo detecta y usa uno solo.
@@ -103,7 +114,16 @@ Rendimiento medido en Azahar (O3DS, un solo núcleo):
   referencia con el host de PC (`RT_VCLOCK=1` hace las corridas deterministas y
   `RT_PCM` captura el audio).
 - Si `sdmc:/3ds/sotn/bench.txt` existe, no hay frameskip ni límite de 60 Hz: el contador
-  de FPS muestra el rendimiento bruto.
+  de FPS muestra el rendimiento bruto. `log.txt` registra cada 5 s los FPS, el tiempo
+  por subsistema, el peor frame y los frames de más de 20 ms.
+- Ayudas para partidas guionizadas (las mismas en PC y 3DS): `autoinput.txt`
+  (`frame:máscara,...`, botones PSX en hex), `vclock.txt` (streaming del CD por frames,
+  determinista) y `onehit.txt` (los enemigos quedan con 1 de vida). En PC:
+  `RT_INPUT`, `RT_VCLOCK=1`, `RT_CHEAT_ONEHIT=1`, `RT_CHEAT_UNTIL=n`, `RT_FORCE_SKIP=n`.
+- Optimizaciones de la GPU por software: rutas especializadas por profundidad de textura,
+  modulación y modo de mezcla; quads 1:1 dibujados como sprites; paletas y tablas de
+  modulación en caché; mosaicos de 4 bits con una búsqueda por cada dos texels; mezclas
+  semitransparentes de a dos píxeles. Todas verificadas bit a bit en el host de PC.
 
 ## Variables útiles del host de PC
 
