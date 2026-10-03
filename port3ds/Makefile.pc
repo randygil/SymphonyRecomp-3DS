@@ -14,7 +14,7 @@ CFLAGS  := -O2 -g -std=gnu11 -Iruntime/include -I/c/msys64/mingw64/include -fno-
            -Wall -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable $(EXTRA)
 LDFLAGS := -L/c/msys64/mingw64/lib -lmingw32 -lSDL2main -lSDL2 -Wl,--stack,268435456
 
-include $(GEN)/sources.mk
+-include $(GEN)/sources.mk
 
 RT_SRC  := $(wildcard runtime/src/*.c)
 RT_OBJ  := $(patsubst runtime/src/%.c,$(OBJ)/rt_%.o,$(RT_SRC))

@@ -1,0 +1,58 @@
+name: 3DS port
+
+# Checks what can be built without the game disc: the C generator (cgen) and the
+# C runtime for the 3DS (devkitARM) and for the PC test host. The full .3dsx/.cia
+# needs the disc image to generate the game code, so it is built locally.
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'port3ds/**'
+      - 'RecompOne'
+      - '.github/workflows/port3ds.yml'
+  pull_request:
+    paths:
+      - 'port3ds/**'
+      - 'RecompOne'
+      - '.github/workflows/port3ds.yml'
+  workflow_dispatch:
+
+jobs:
+  cgen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build cgen
+        run: dotnet build port3ds/cgen/CGen.csproj -c Release
+
+  runtime-3ds:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile runtime and 3DS host
+        working-directory: port3ds
+        run: make runtime -j"$(nproc)" TMP=/tmp
+
+  runtime-pc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile runtime with the host compiler
+        working-directory: port3ds
+        run: |
+          mkdir -p build/ci
+          for f in runtime/src/*.c; do
+            gcc -O2 -std=gnu11 -fno-strict-aliasing -Wall -Wno-unused-label -Wno-unused-variable \
+                -Wno-unused-but-set-variable -Iruntime/include -c "$f" -o "build/ci/$(basename "$f" .c).o"
+          done
